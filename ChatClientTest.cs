@@ -9,9 +9,13 @@ namespace EUAIActClassifier;
 
 public abstract class ChatClientTest
 {
-    static readonly JsonSerializerOptions jsonReadable = new() { WriteIndented = true };
-            
-    protected ChatResponse GenerateChatResponse(IChatClient chatClient, IEnumerable<ChatMessage> messages)
+    public static readonly JsonSerializerOptions JsonReadable = new()
+    {
+        WriteIndented = true,
+        Converters = { new System.Text.Json.Serialization.JsonStringEnumConverter() }
+    };
+
+    protected async Task<ChatResponse> GenerateChatResponse(IChatClient chatClient, IEnumerable<ChatMessage> messages)
     {
         var invocation = chatClient.GetStreamingResponseAsync(
             messages: messages,
@@ -21,14 +25,14 @@ public abstract class ChatClientTest
                 Tools = [],
             });
 
-        List<ChatResponseUpdate> updates = invocation.ToListAsync().GetAwaiter().GetResult();
+        List<ChatResponseUpdate> updates = await invocation.ToListAsync();
         ChatResponse chatResponse = updates.ToChatResponse();
 
         foreach (var message in chatResponse.Messages)
         {
-            Console.WriteLine($"{JsonSerializer.Serialize(message, jsonReadable)}");
+            Console.WriteLine($"{JsonSerializer.Serialize(message, JsonReadable)}");
         }
-        
+
         return chatResponse;
     }
 
@@ -55,7 +59,7 @@ public abstract class ChatClientTest
             var client = openAiClient
                 .AsIChatClient()
                 .AsBuilder()
-                .Use(client => new Classifier(client))
+                .Use(client => new ClassificationMiddleware(client, client))
                 .Build();
 
             return client;
