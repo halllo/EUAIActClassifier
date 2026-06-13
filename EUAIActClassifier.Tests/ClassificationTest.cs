@@ -129,6 +129,28 @@ public sealed class ClassificationTest : ChatClientTest
         }
     }
 
+    /// <summary>
+    /// Fast, offline guard for the agent-level read contract: the verdict must be readable off the shared
+    /// <see cref="AdditionalPropertiesDictionary"/> (what an agent framework surfaces on its own update type) and
+    /// off a <see cref="ChatResponseUpdate"/>, including the value-type fallback that survives a storage-key change.
+    /// </summary>
+    [TestMethod]
+    public void ReadsClassificationFromAdditionalPropertiesAndUpdate()
+    {
+        var verdict = new Classification { Risk = Risk.High, Category = "Annex III(4) employment", Reason = "CV screening." };
+
+        // Stored under an arbitrary key: the value-type fallback still finds it (the agent-level resilience guarantee).
+        var props = new AdditionalPropertiesDictionary { ["some.host.key"] = verdict };
+        Assert.AreSame(verdict, props.EUAIActClassification, "Should read the verdict off AdditionalPropertiesDictionary.");
+
+        var update = new ChatResponseUpdate { AdditionalProperties = props };
+        Assert.AreSame(verdict, update.EUAIActClassification, "Should read the verdict off a ChatResponseUpdate.");
+
+        // No verdict present → null, not an exception.
+        Assert.IsNull(new AdditionalPropertiesDictionary { ["x"] = "y" }.EUAIActClassification);
+        Assert.IsNull(new ChatResponseUpdate().EUAIActClassification);
+    }
+
     private async Task<Classification?> Classify(IEnumerable<ChatMessage> messages, bool useStreaming)
     {
         var chatResponse = await GenerateChatResponse(GetOpenAIChatClient(), messages, useStreaming);

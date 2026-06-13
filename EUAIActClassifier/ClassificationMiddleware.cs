@@ -6,7 +6,7 @@ namespace EUAIActClassifier;
 
 /// <summary>
 /// Middleware for <see cref="IChatClient"/> that classifies every conversation against the EU AI Act risk
-/// tiers and attaches the result so it can be read back via <see cref="EUAIActClassification"/>.
+/// tiers and attaches the result so it can be read back via <c>EUAIActClassification</c>.
 /// </summary>
 /// <remarks>
 /// Classification is a best-effort side channel: it never throws into the primary chat response. If the
@@ -15,7 +15,7 @@ namespace EUAIActClassifier;
 public static class ClassificationMiddleware
 {
     /// <summary>The key under which the classification is stored in an <see cref="AdditionalPropertiesDictionary"/>.</summary>
-    private const string ClassificationKey = "EUAIActClassifier.Classification";
+    internal const string ClassificationKey = "EUAIActClassifier.Classification";
 
     /// <summary>
     /// System prompt instructing the model to classify a conversation into one of the EU AI Act risk tiers.
@@ -85,6 +85,35 @@ public static class ClassificationMiddleware
             builder.Use(GetResponseAsync, GetStreamingResponseAsync);
     }
 
+    extension(IChatClient classifierClient)
+    {
+        /// <summary>
+        /// Classifies a complete conversation against the EU AI Act risk tiers, using this client purely as the
+        /// classification engine. This is the same engine behind <c>UseEUAIActClassification()</c>, exposed
+        /// so the classifier does not have to sit in an <see cref="IChatClient"/> pipeline.
+        /// </summary>
+        /// <param name="conversation">
+        /// The full conversation to classify — the user's request together with the final response messages.
+        /// </param>
+        /// <param name="cancellationToken">A token to cancel the classification call.</param>
+        /// <returns>
+        /// The inferred <see cref="Classification"/>. This is a best-effort side channel: it never throws, returning
+        /// a <see cref="Risk.Unknown"/> verdict on failure or when there is nothing to classify.
+        /// </returns>
+        /// <remarks>
+        /// Call this <b>once</b> at a layer that runs once per logical turn. In an agent framework whose run loop
+        /// invokes the underlying <see cref="IChatClient"/> multiple times per run (e.g. a tool-calling loop),
+        /// placing the classifier in the chat-client pipeline would re-classify every intermediate model call;
+        /// classifying once at the agent-run layer over the final conversation avoids that. The
+        /// <paramref name="classifierClient"/> can be any client (often a cheaper, separate model) and need not be
+        /// the one that produced the conversation.
+        /// </remarks>
+        public Task<Classification> ClassifyEUAIActRiskAsync(
+            IEnumerable<ChatMessage> conversation,
+            CancellationToken cancellationToken = default)
+            => ClassifySafelyAsync(classifierClient, conversation, cancellationToken);
+    }
+
     extension(ChatResponse chatResponse)
     {
         /// <summary>
@@ -101,6 +130,34 @@ public static class ClassificationMiddleware
             ?? GetClassification(chatResponse.Messages.LastOrDefault()?.AdditionalProperties);
     }
 
+    extension(ChatResponseUpdate update)
+    {
+        /// <summary>
+        /// Gets the EU AI Act classification carried by this streaming update, or <see langword="null"/> if none.
+        /// </summary>
+        /// <remarks>
+        /// The trailing side-channel update emitted by the streaming pipeline carries the verdict; intermediate
+        /// content updates return <see langword="null"/>. Useful for reacting to the verdict as the stream completes
+        /// without first collecting every update into a <see cref="ChatResponse"/>.
+        /// </remarks>
+        public Classification? EUAIActClassification => GetClassification(update.AdditionalProperties);
+    }
+
+    extension(AdditionalPropertiesDictionary additionalProperties)
+    {
+        /// <summary>
+        /// Gets the EU AI Act classification stored in these additional properties, or <see langword="null"/> if none.
+        /// </summary>
+        /// <remarks>
+        /// This is the building block for agent-level middleware. An agent framework that preserves the
+        /// <see cref="AdditionalPropertiesDictionary"/> when it wraps each chat update surfaces the very same
+        /// dictionary on its own update type, so an agent middleware can read the verdict via
+        /// <c>update.AdditionalProperties?.EUAIActClassification</c> — without referencing this package's storage
+        /// details, and without this package taking a dependency on any agent framework.
+        /// </remarks>
+        public Classification? EUAIActClassification => GetClassification(additionalProperties);
+    }
+
     private static async Task<ChatResponse> GetResponseAsync(
         IEnumerable<ChatMessage> messages,
         ChatOptions? options,
@@ -109,8 +166,8 @@ public static class ClassificationMiddleware
     {
         var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
 
-        var response = await inner.GetResponseAsync(messageList, options, cancellationToken);
-        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), cancellationToken);
+        var response = await inner.GetResponseAsync(messageList, options, cancellationToken).ConfigureAwait(false);
+        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), cancellationToken).ConfigureAwait(false);
 
         var lastMessage = response.Messages.LastOrDefault();
         if (lastMessage is not null)
@@ -135,7 +192,7 @@ public static class ClassificationMiddleware
 
         // Forward every update untouched so the consumer's stream is never blocked by classification.
         List<ChatResponseUpdate> updates = [];
-        await foreach (var update in inner.GetStreamingResponseAsync(messageList, options, cancellationToken))
+        await foreach (var update in inner.GetStreamingResponseAsync(messageList, options, cancellationToken).ConfigureAwait(false))
         {
             updates.Add(update);
             yield return update;
@@ -145,7 +202,7 @@ public static class ClassificationMiddleware
         // trailing side-channel update. Tagging it with the last message id makes ToChatResponse route the
         // classification onto that message; if there is none it falls back to the response level.
         var response = updates.ToChatResponse();
-        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), cancellationToken);
+        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), cancellationToken).ConfigureAwait(false);
 
         yield return new ChatResponseUpdate
         {
@@ -167,7 +224,7 @@ public static class ClassificationMiddleware
     {
         try
         {
-            return await ClassifyEUAIActRiskAsync(inner, conversation, cancellationToken);
+            return await ClassifyCoreAsync(inner, conversation, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -183,13 +240,14 @@ public static class ClassificationMiddleware
     /// Asks <paramref name="chatClient"/> to classify the EU AI Act risk tier of an entire conversation
     /// (the user's request together with the assistant's response).
     /// </summary>
+    /// <param name="chatClient">The chat client used as the classification engine.</param>
     /// <param name="conversation">The conversation to classify.</param>
     /// <param name="cancellationToken">A token to cancel the classification call.</param>
     /// <returns>
     /// The <see cref="Classification"/> inferred for the conversation. Returns a <see cref="Risk.Unknown"/>
     /// classification when there is no text to classify or the model does not return a usable result.
     /// </returns>
-    private static async Task<Classification> ClassifyEUAIActRiskAsync(
+    private static async Task<Classification> ClassifyCoreAsync(
         IChatClient chatClient,
         IEnumerable<ChatMessage> conversation,
         CancellationToken cancellationToken = default)
@@ -216,7 +274,7 @@ public static class ClassificationMiddleware
             {
                 Temperature = 0.0F,
             },
-            cancellationToken: cancellationToken);
+            cancellationToken: cancellationToken).ConfigureAwait(false);
 
         return classificationResponse.TryGetResult(out var result) && result is not null
             ? result
@@ -224,10 +282,18 @@ public static class ClassificationMiddleware
     }
 
     /// <summary>Reads the classification stored under <see cref="ClassificationKey"/>, if any.</summary>
-    private static Classification? GetClassification(AdditionalPropertiesDictionary? additionalProperties) =>
-        additionalProperties?.TryGetValue(ClassificationKey, out var value) == true
-            ? value as Classification
-            : null;
+    /// <remarks>
+    /// Falls back to a value-type scan: the verdict is always stored as a <see cref="Classification"/>, so even if
+    /// the storage key changes or a host re-homes the property onto a different carrier, the value is still found.
+    /// </remarks>
+    internal static Classification? GetClassification(AdditionalPropertiesDictionary? additionalProperties)
+    {
+        if (additionalProperties is null) return null;
+
+        return additionalProperties.TryGetValue(ClassificationKey, out var value) && value is Classification classification
+            ? classification
+            : additionalProperties.Values.OfType<Classification>().FirstOrDefault();
+    }
 
     private static Classification Unknown(string reason) =>
         new() { Risk = Risk.Unknown, Category = "Unknown", Reason = reason };

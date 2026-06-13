@@ -17,9 +17,9 @@ public class Classification
     /// "Article 5(1)(c) social scoring", "Article 50 transparency", or "Minimal risk – general assistance".
     /// </summary>
     [Description("The concrete EU AI Act basis, e.g. 'Annex III(4) employment', 'Article 5(1)(c) social scoring', 'Article 50 transparency', or 'Minimal risk'.")]
-    public string Category { get; set; } = null!;
+    public string Category { get; set; } = "";
 
     /// <summary>A short, factual justification (one or two sentences) for the assigned risk tier.</summary>
     [Description("A short, factual justification (one or two sentences) for the assigned risk tier.")]
-    public string Reason { get; set; } = null!;
+    public string Reason { get; set; } = "";
 }
