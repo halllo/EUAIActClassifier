@@ -1,0 +1,6 @@
+# Hands-off versioning: every commit on main auto-increments the version
+# (no manual tagging needed). TrunkBased is GitVersion 6's replacement for the
+# old v5 "Mainline" mode. Tagging a version (e.g. 1.0.0) still works to set a
+# baseline; a commit message containing "+semver: minor" / "+semver: major"
+# bumps that component instead of patch.
+workflow: TrunkBased/preview1

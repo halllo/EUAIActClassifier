@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EUAIActClassifier/EUAIActClassifier.csproj" />
+  <Project Path="EUAIActClassifier.Tests/EUAIActClassifier.Tests.csproj" />
+</Solution>
