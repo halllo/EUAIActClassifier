@@ -82,4 +82,70 @@ public sealed class ChatClientMiddlewareTest
         Assert.AreEqual(Risk.Unknown, response.EUAIActClassification?.Risk);
         Assert.AreEqual(0, inner.ClassificationCalls, "Nothing to classify, so the model must not be called.");
     }
+
+    [TestMethod]
+    public async Task DefaultOptions_UsesBuiltInSystemPrompt()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+
+        await classifier.ClassifyEUAIActRiskAsync([new(ChatRole.User, "Screen these CVs.")]);
+
+        var system = classifier.LastMessages!.Single(m => m.Role == ChatRole.System);
+        StringAssert.Contains(system.Text, "EU AI Act compliance classifier", "The built-in prompt should be used by default.");
+    }
+
+    [TestMethod]
+    public async Task CustomSystemPrompt_ReplacesBuiltInPrompt()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+
+        await classifier.ClassifyEUAIActRiskAsync(
+            [new(ChatRole.User, "Screen these CVs.")],
+            new ClassificationOptions { SystemPrompt = "CUSTOM PROMPT" });
+
+        var system = classifier.LastMessages!.Single(m => m.Role == ChatRole.System);
+        Assert.AreEqual("CUSTOM PROMPT", system.Text, "A custom prompt should fully replace the built-in one.");
+    }
+
+    [TestMethod]
+    public async Task ConversationFilter_RestrictsClassifiedMessages()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        ChatMessage[] conversation =
+        [
+            new(ChatRole.User, "OLDEST question"),
+            new(ChatRole.Assistant, "old answer"),
+            new(ChatRole.User, "NEWEST question"),
+            new(ChatRole.Assistant, "new answer"),
+        ];
+
+        // Keep only the last turn (a user message and the assistant reply).
+        await classifier.ClassifyEUAIActRiskAsync(
+            conversation,
+            new ClassificationOptions { ConversationFilter = m => m.TakeLast(2) });
+
+        var transcript = classifier.LastMessages!.Single(m => m.Role == ChatRole.User).Text;
+        StringAssert.Contains(transcript, "NEWEST question");
+        StringAssert.Contains(transcript, "new answer");
+        Assert.IsFalse(transcript.Contains("OLDEST"), "Filtered-out turns must not reach the classifier.");
+    }
+
+    [TestMethod]
+    public async Task Middleware_PassesOptionsThrough_PromptAndFilter()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "Here is the answer.");
+        var options = new ClassificationOptions
+        {
+            SystemPrompt = "CUSTOM",
+            ConversationFilter = m => m.TakeLast(1), // of the full conversation (input + reply) → just the reply
+        };
+        var client = inner.AsBuilder().UseEUAIActClassification(options).Build();
+
+        await client.GetResponseAsync([new(ChatRole.User, "FIRST"), new(ChatRole.User, "SECOND")]);
+
+        Assert.AreEqual("CUSTOM", inner.LastClassificationMessages!.Single(m => m.Role == ChatRole.System).Text);
+        var transcript = inner.LastClassificationMessages!.Single(m => m.Role == ChatRole.User).Text;
+        StringAssert.Contains(transcript, "Here is the answer.");
+        Assert.IsFalse(transcript.Contains("FIRST"), "The filter should have dropped earlier input messages.");
+    }
 }

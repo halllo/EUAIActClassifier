@@ -10,7 +10,7 @@ namespace EUAIActClassifier;
 /// <c>response.EUAIActClassification</c> or <c>update.EUAIActClassification</c>.
 /// </summary>
 /// <remarks>
-/// Unlike placing <see cref="ClassificationMiddleware.UseEUAIActClassification(ChatClientBuilder)"/> in the agent's
+/// Unlike placing <see cref="ClassificationMiddleware.UseEUAIActClassification(ChatClientBuilder, ClassificationOptions?)"/> in the agent's
 /// <see cref="IChatClient"/> pipeline — which an agent run loop invokes once per model round-trip, re-classifying
 /// every intermediate tool-calling step — this agent sits at the run layer and classifies exactly once, over the
 /// full conversation. The supplied <c>classifier</c> is used purely as the classification engine and is not part of
@@ -24,13 +24,21 @@ namespace EUAIActClassifier;
 public sealed class EUAIActClassificationAgent : DelegatingAIAgent
 {
     private readonly IChatClient _classifier;
+    private readonly ClassificationOptions? _options;
 
     /// <summary>Initializes a new instance of the <see cref="EUAIActClassificationAgent"/> class.</summary>
     /// <param name="innerAgent">The agent whose runs are classified.</param>
     /// <param name="classifier">The chat client used as the classification engine (not part of the inference path).</param>
-    public EUAIActClassificationAgent(AIAgent innerAgent, IChatClient classifier)
+    /// <param name="options">
+    /// Optional configuration — a custom system prompt and/or a conversation filter. When <see langword="null"/>,
+    /// the built-in prompt is used and the whole conversation is classified.
+    /// </param>
+    public EUAIActClassificationAgent(AIAgent innerAgent, IChatClient classifier, ClassificationOptions? options = null)
         : base(innerAgent)
-        => _classifier = classifier ?? throw new ArgumentNullException(nameof(classifier));
+    {
+        _classifier = classifier ?? throw new ArgumentNullException(nameof(classifier));
+        _options = options;
+    }
 
     /// <inheritdoc />
     protected override async Task<AgentResponse> RunCoreAsync(
@@ -44,7 +52,7 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
         var response = await InnerAgent.RunAsync(messageList, session, options, cancellationToken).ConfigureAwait(false);
 
         var classification = await _classifier
-            .ClassifyEUAIActRiskAsync(messageList.Concat(response.Messages), cancellationToken)
+            .ClassifyEUAIActRiskAsync(messageList.Concat(response.Messages), _options, cancellationToken)
             .ConfigureAwait(false);
 
         (response.AdditionalProperties ??= [])[ClassificationMiddleware.ClassificationKey] = classification;
@@ -72,7 +80,7 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
         // Once the run has completed, classify the full conversation exactly once and emit the verdict as a
         // trailing side-channel update.
         var classification = await _classifier
-            .ClassifyEUAIActRiskAsync(messageList.Concat(updates.ToAgentResponse().Messages), cancellationToken)
+            .ClassifyEUAIActRiskAsync(messageList.Concat(updates.ToAgentResponse().Messages), _options, cancellationToken)
             .ConfigureAwait(false);
 
         yield return new AgentResponseUpdate
@@ -93,9 +101,13 @@ public static class ClassificationAgentExtensions
         /// a.UseEUAIActClassification(classifier)).Build()</c>, or use the returned agent directly.
         /// </summary>
         /// <param name="classifier">The chat client used as the classification engine (not part of the inference path).</param>
+        /// <param name="options">
+        /// Optional configuration — a custom system prompt and/or a conversation filter. When <see langword="null"/>,
+        /// the built-in prompt is used and the whole conversation is classified.
+        /// </param>
         /// <returns>An <see cref="AIAgent"/> that classifies each run.</returns>
-        public AIAgent UseEUAIActClassification(IChatClient classifier) =>
-            new EUAIActClassificationAgent(agent, classifier);
+        public AIAgent UseEUAIActClassification(IChatClient classifier, ClassificationOptions? options = null) =>
+            new EUAIActClassificationAgent(agent, classifier, options);
     }
 
     extension(AgentResponse response)

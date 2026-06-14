@@ -80,9 +80,15 @@ public static class ClassificationMiddleware
         /// Adds the classification middleware to the pipeline so that every response is classified
         /// against the EU AI Act risk tiers.
         /// </summary>
+        /// <param name="options">
+        /// Optional configuration — a custom system prompt and/or a conversation filter. When
+        /// <see langword="null"/>, the built-in prompt is used and the whole conversation is classified.
+        /// </param>
         /// <returns>The <paramref name="builder"/> so that calls can be chained.</returns>
-        public ChatClientBuilder UseEUAIActClassification() =>
-            builder.Use(GetResponseAsync, GetStreamingResponseAsync);
+        public ChatClientBuilder UseEUAIActClassification(ClassificationOptions? options = null) =>
+            builder.Use(
+                (messages, chatOptions, inner, ct) => GetResponseAsync(messages, chatOptions, inner, options, ct),
+                (messages, chatOptions, inner, ct) => GetStreamingResponseAsync(messages, chatOptions, inner, options, ct));
     }
 
     extension(IChatClient classifierClient)
@@ -94,6 +100,10 @@ public static class ClassificationMiddleware
         /// </summary>
         /// <param name="conversation">
         /// The full conversation to classify — the user's request together with the final response messages.
+        /// </param>
+        /// <param name="options">
+        /// Optional configuration — a custom system prompt and/or a conversation filter. When
+        /// <see langword="null"/>, the built-in prompt is used and the whole conversation is classified.
         /// </param>
         /// <param name="cancellationToken">A token to cancel the classification call.</param>
         /// <returns>
@@ -110,8 +120,9 @@ public static class ClassificationMiddleware
         /// </remarks>
         public Task<Classification> ClassifyEUAIActRiskAsync(
             IEnumerable<ChatMessage> conversation,
+            ClassificationOptions? options = null,
             CancellationToken cancellationToken = default)
-            => ClassifySafelyAsync(classifierClient, conversation, cancellationToken);
+            => ClassifySafelyAsync(classifierClient, conversation, options, cancellationToken);
     }
 
     extension(ChatResponse chatResponse)
@@ -162,12 +173,13 @@ public static class ClassificationMiddleware
         IEnumerable<ChatMessage> messages,
         ChatOptions? options,
         IChatClient inner,
+        ClassificationOptions? classificationOptions,
         CancellationToken cancellationToken)
     {
         var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
 
         var response = await inner.GetResponseAsync(messageList, options, cancellationToken).ConfigureAwait(false);
-        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), cancellationToken).ConfigureAwait(false);
+        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), classificationOptions, cancellationToken).ConfigureAwait(false);
 
         var lastMessage = response.Messages.LastOrDefault();
         if (lastMessage is not null)
@@ -186,6 +198,7 @@ public static class ClassificationMiddleware
         IEnumerable<ChatMessage> messages,
         ChatOptions? options,
         IChatClient inner,
+        ClassificationOptions? classificationOptions,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
@@ -202,7 +215,7 @@ public static class ClassificationMiddleware
         // trailing side-channel update. Tagging it with the last message id makes ToChatResponse route the
         // classification onto that message; if there is none it falls back to the response level.
         var response = updates.ToChatResponse();
-        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), cancellationToken).ConfigureAwait(false);
+        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), classificationOptions, cancellationToken).ConfigureAwait(false);
 
         yield return new ChatResponseUpdate
         {
@@ -220,11 +233,12 @@ public static class ClassificationMiddleware
     private static async Task<Classification> ClassifySafelyAsync(
         IChatClient inner,
         IEnumerable<ChatMessage> conversation,
+        ClassificationOptions? options,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await ClassifyCoreAsync(inner, conversation, cancellationToken).ConfigureAwait(false);
+            return await ClassifyCoreAsync(inner, conversation, options, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -242,6 +256,7 @@ public static class ClassificationMiddleware
     /// </summary>
     /// <param name="chatClient">The chat client used as the classification engine.</param>
     /// <param name="conversation">The conversation to classify.</param>
+    /// <param name="options">Optional custom system prompt and/or conversation filter; <see langword="null"/> for the defaults.</param>
     /// <param name="cancellationToken">A token to cancel the classification call.</param>
     /// <returns>
     /// The <see cref="Classification"/> inferred for the conversation. Returns a <see cref="Risk.Unknown"/>
@@ -250,11 +265,15 @@ public static class ClassificationMiddleware
     private static async Task<Classification> ClassifyCoreAsync(
         IChatClient chatClient,
         IEnumerable<ChatMessage> conversation,
+        ClassificationOptions? options,
         CancellationToken cancellationToken = default)
     {
         if (conversation is null) throw new ArgumentNullException(nameof(conversation));
 
-        var transcript = conversation
+        var materialized = conversation as IReadOnlyList<ChatMessage> ?? conversation.ToList();
+        var filtered = options?.ConversationFilter is { } filter ? filter(materialized) : materialized;
+
+        var transcript = filtered
             .Where(m => !string.IsNullOrWhiteSpace(m.Text))
             .Select(m => new { Role = m.Role.Value, m.Text })
             .ToArray();
@@ -264,11 +283,13 @@ public static class ClassificationMiddleware
             return Unknown("There was no text content to classify.");
         }
 
+        var systemPrompt = string.IsNullOrWhiteSpace(options?.SystemPrompt) ? SystemPrompt : options!.SystemPrompt!;
+
         var classificationResponse = await chatClient.GetResponseAsync<Classification>(
             messages:
             [
-                new ChatMessage(ChatRole.System, SystemPrompt),
-                    new ChatMessage(ChatRole.User, $"Conversation to classify:\n{JsonSerializer.Serialize(transcript)}"),
+                new ChatMessage(ChatRole.System, systemPrompt),
+                new ChatMessage(ChatRole.User, $"Conversation to classify:\n{JsonSerializer.Serialize(transcript)}"),
             ],
             options: new()
             {

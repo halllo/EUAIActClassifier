@@ -174,6 +174,37 @@ If you'd rather drive the engine yourself, it is also exposed directly as
 `classifier.ClassifyEUAIActRiskAsync(conversation)` — give it any `IChatClient` and the full conversation, and
 it returns the verdict as the same best-effort side channel (never throws; `Risk.Unknown` on failure).
 
+## Customisation
+
+Pass a `ClassificationOptions` to tailor the classification. Both properties are optional; leaving them
+unset preserves the defaults (built-in prompt, whole conversation classified). The same options apply to
+**every** entry point shown above — the middleware, the agent wrapper, and `ClassifyEUAIActRiskAsync`.
+
+```csharp
+var options = new ClassificationOptions
+{
+    // Fully replaces the built-in EU AI Act prompt. The replacement is responsible for instructing the
+    // model to return a Classification (Risk / Category / Reason). Leave null to keep the built-in prompt.
+    SystemPrompt = "You are a compliance classifier for ...",
+
+    // Classify only the most recent turns to cut tokens. Receives the full conversation (request + reply)
+    // and returns the subset to classify. A turn is a user message and the assistant reply, so the last
+    // two turns are the last four messages. Leave null to classify the whole conversation.
+    ConversationFilter = messages => messages.TakeLast(4),
+};
+
+// IChatClient middleware
+var client = openAiClient.AsIChatClient().AsBuilder().UseEUAIActClassification(options).Build();
+
+// Agent wrapper
+AIAgent agent = baseAgent.UseEUAIActClassification(classifier, options);
+
+// Direct engine
+var verdict = await classifier.ClassifyEUAIActRiskAsync(conversation, options);
+```
+
+The filter runs first; empty-text messages are still dropped afterwards.
+
 ## The result
 
 [`Classification`](EUAIActClassifier/Classification.cs) carries three fields:
