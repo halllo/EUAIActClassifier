@@ -131,13 +131,48 @@ public sealed class ChatClientMiddlewareTest
     }
 
     [TestMethod]
-    public async Task Middleware_PassesOptionsThrough_PromptAndFilter()
+    public async Task DefaultOptions_ClassifiesAtTemperatureZero()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+
+        await classifier.ClassifyEUAIActRiskAsync([new(ChatRole.User, "Screen these CVs.")]);
+
+        Assert.AreEqual(0.0F, classifier.LastOptions?.Temperature, "The classifier should default to temperature 0.");
+    }
+
+    [TestMethod]
+    public async Task CustomTemperature_IsPassedToTheClassificationCall()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+
+        await classifier.ClassifyEUAIActRiskAsync(
+            [new(ChatRole.User, "Screen these CVs.")],
+            new ClassificationOptions { Temperature = 0.7F });
+
+        Assert.AreEqual(0.7F, classifier.LastOptions?.Temperature);
+    }
+
+    [TestMethod]
+    public async Task ModelDefaultTemperature_SendsNoTemperature()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+
+        await classifier.ClassifyEUAIActRiskAsync(
+            [new(ChatRole.User, "Screen these CVs.")],
+            new ClassificationOptions { Temperature = ClassificationOptions.ModelDefaultTemperature });
+
+        Assert.IsNull(classifier.LastOptions?.Temperature, "The opt-out sentinel must leave Temperature unset.");
+    }
+
+    [TestMethod]
+    public async Task Middleware_PassesOptionsThrough_PromptFilterAndTemperature()
     {
         var inner = new DualRoleChatClient(HighVerdict, "Here is the answer.");
         var options = new ClassificationOptions
         {
             SystemPrompt = "CUSTOM",
             ConversationFilter = m => m.TakeLast(1), // of the full conversation (input + reply) → just the reply
+            Temperature = 0.3F,
         };
         var client = inner.AsBuilder().UseEUAIActClassification(options).Build();
 
@@ -147,5 +182,6 @@ public sealed class ChatClientMiddlewareTest
         var transcript = inner.LastClassificationMessages!.Single(m => m.Role == ChatRole.User).Text;
         StringAssert.Contains(transcript, "Here is the answer.");
         Assert.IsFalse(transcript.Contains("FIRST"), "The filter should have dropped earlier input messages.");
+        Assert.AreEqual(0.3F, inner.LastClassificationOptions?.Temperature);
     }
 }

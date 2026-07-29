@@ -81,8 +81,9 @@ public static class ClassificationMiddleware
         /// against the EU AI Act risk tiers.
         /// </summary>
         /// <param name="options">
-        /// Optional configuration — a custom system prompt and/or a conversation filter. When
-        /// <see langword="null"/>, the built-in prompt is used and the whole conversation is classified.
+        /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature.
+        /// When <see langword="null"/>, the built-in prompt is used, the whole conversation is classified and the
+        /// classifier runs at temperature 0.
         /// </param>
         /// <returns>The <paramref name="builder"/> so that calls can be chained.</returns>
         public ChatClientBuilder UseEUAIActClassification(ClassificationOptions? options = null) =>
@@ -102,8 +103,9 @@ public static class ClassificationMiddleware
         /// The full conversation to classify — the user's request together with the final response messages.
         /// </param>
         /// <param name="options">
-        /// Optional configuration — a custom system prompt and/or a conversation filter. When
-        /// <see langword="null"/>, the built-in prompt is used and the whole conversation is classified.
+        /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature.
+        /// When <see langword="null"/>, the built-in prompt is used, the whole conversation is classified and the
+        /// classifier runs at temperature 0.
         /// </param>
         /// <param name="cancellationToken">A token to cancel the classification call.</param>
         /// <returns>
@@ -256,7 +258,7 @@ public static class ClassificationMiddleware
     /// </summary>
     /// <param name="chatClient">The chat client used as the classification engine.</param>
     /// <param name="conversation">The conversation to classify.</param>
-    /// <param name="options">Optional custom system prompt and/or conversation filter; <see langword="null"/> for the defaults.</param>
+    /// <param name="options">Optional custom system prompt, conversation filter and/or temperature; <see langword="null"/> for the defaults.</param>
     /// <param name="cancellationToken">A token to cancel the classification call.</param>
     /// <returns>
     /// The <see cref="Classification"/> inferred for the conversation. Returns a <see cref="Risk.Unknown"/>
@@ -285,6 +287,9 @@ public static class ClassificationMiddleware
 
         var systemPrompt = string.IsNullOrWhiteSpace(options?.SystemPrompt) ? SystemPrompt : options!.SystemPrompt!;
 
+        // NaN is the opt-out sentinel: leave Temperature unset so the model's own default applies.
+        var temperature = options?.Temperature ?? ClassificationOptions.DefaultTemperature;
+
         var classificationResponse = await chatClient.GetResponseAsync<Classification>(
             messages:
             [
@@ -293,7 +298,7 @@ public static class ClassificationMiddleware
             ],
             options: new()
             {
-                Temperature = 0.0F,
+                Temperature = float.IsNaN(temperature) ? null : temperature,
             },
             cancellationToken: cancellationToken).ConfigureAwait(false);
 

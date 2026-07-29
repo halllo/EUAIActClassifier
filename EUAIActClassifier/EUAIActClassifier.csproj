@@ -25,16 +25,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
     <!-- Agent-framework support uses only the lightweight abstractions (AIAgent / DelegatingAIAgent live here),
          not the full Microsoft.Agents.AI, so consumers that only use the IChatClient middleware don't pull in
          the heavy agent runtime (ML.Tokenizers, VectorData, …). Keeps netstandard2.0 reach. -->
-    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.10.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.15.0" />
     <!-- On netstandard2.0 the IAsyncEnumerable streaming APIs live in this facade, which the assembly
          hard-references. Declare it directly so it is listed in the nuspec: otherwise it only arrives
          transitively at build time and is dropped by net8.0+ consumers (where the types are in-box),
          causing a "Could not load file or assembly 'Microsoft.Bcl.AsyncInterfaces'" failure at runtime. -->
-    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.9" />
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.10" />
   </ItemGroup>
 
 </Project>

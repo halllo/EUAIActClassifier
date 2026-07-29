@@ -1,12 +1,8 @@
 # EU AI Act Classifier
 
-A drop-in middleware that classifies every chat conversation against the
-[EU AI Act](https://artificialintelligenceact.eu/) risk tiers and attaches the result to the response —
-so you can see, log, or gate on the risk level of what your AI is being asked to do.
+A drop-in middleware that classifies every chat conversation against the [EU AI Act](https://artificialintelligenceact.eu/) risk tiers and attaches the result to the response — so you can see, log, or gate on the risk level of what your AI is being asked to do.
 
-It works at two levels: as `Microsoft.Extensions.AI.IChatClient` middleware (any provider — OpenAI,
-Azure OpenAI, Bedrock, …), and as a first-class **Microsoft Agent Framework** agent that classifies once
-per agent run. Both support streaming and non-streaming calls.
+It works at two levels: as `Microsoft.Extensions.AI.IChatClient` middleware (any provider — OpenAI, Azure OpenAI, Bedrock, …), and as a first-class **Microsoft Agent Framework** agent that classifies once per agent run. Both support streaming and non-streaming calls.
 
 ## Installation
 
@@ -16,17 +12,11 @@ The package is published on [NuGet](https://www.nuget.org/packages/EUAIActClassi
 dotnet add package EUAIActClassifier
 ```
 
-The package targets `netstandard2.0`, so it works with .NET Framework 4.6.1+, .NET Core, and modern
-.NET. It depends on [`Microsoft.Extensions.AI`](https://www.nuget.org/packages/Microsoft.Extensions.AI)
-and the lightweight [`Microsoft.Agents.AI.Abstractions`](https://www.nuget.org/packages/Microsoft.Agents.AI.Abstractions)
-(for the agent-level middleware) — **not** the full agent runtime — both pulled in automatically.
+The package targets `netstandard2.0`, so it works with .NET Framework 4.6.1+, .NET Core, and modern .NET. It depends on [`Microsoft.Extensions.AI`](https://www.nuget.org/packages/Microsoft.Extensions.AI) and the lightweight [`Microsoft.Agents.AI.Abstractions`](https://www.nuget.org/packages/Microsoft.Agents.AI.Abstractions) (for the agent-level middleware) — **not** the full agent runtime — both pulled in automatically.
 
 ## How it works
 
-The middleware passes your request straight through to the underlying model, then makes a second,
-structured-output call that classifies the **whole conversation** (your request *and* the model's
-reply) into one risk tier. The verdict is attached to the response and read back via
-`response.EUAIActClassification`.
+The middleware passes your request straight through to the underlying model, then makes a second, structured-output call that classifies the **whole conversation** (your request *and* the model's reply) into one risk tier. The verdict is attached to the response and read back via `response.EUAIActClassification`.
 
 ```text
    ┌──────────┐   request    ┌────────────────────────────┐   request    ┌──────────────┐
@@ -42,18 +32,13 @@ reply) into one risk tier. The verdict is attached to the response and read back
                               └────────────────────────────┘
 ```
 
-Classification is a **best-effort side channel**: it never throws into your primary response. If the
-classifier call fails (or there is nothing to classify), the result is recorded as `Risk.Unknown`
-rather than surfacing an error.
+Classification is a **best-effort side channel**: it never throws into your primary response. If the classifier call fails (or there is nothing to classify), the result is recorded as `Risk.Unknown` rather than surfacing an error.
 
-The [Microsoft Agent Framework](#microsoft-agent-framework-first-class) variant works the same way but
-runs at the **agent** level — it classifies once over the *completed* conversation of an agent run (after
-any tool-calling round-trips), rather than per model call. See that section for why.
+The [Microsoft Agent Framework](#microsoft-agent-framework-first-class) variant works the same way but runs at the **agent** level — it classifies once over the *completed* conversation of an agent run (after any tool-calling round-trips), rather than per model call. See that section for why.
 
 ## Risk tiers
 
-The EU AI Act takes a risk-based approach — the higher the tier, the heavier the obligations, and the
-fewer systems fall into it:
+The EU AI Act takes a risk-based approach — the higher the tier, the heavier the obligations, and the fewer systems fall into it:
 
 ```text
               /\
@@ -104,8 +89,7 @@ var updates = await client.GetStreamingResponseAsync(messages).ToListAsync();
 var risk = updates.ToChatResponse().EUAIActClassification?.Risk;
 ```
 
-If you want to **react** to the verdict as the stream completes (log it, gate on it, surface it in a UI)
-without first aggregating the whole turn, read it off the individual update with `update.EUAIActClassification`:
+If you want to **react** to the verdict as the stream completes (log it, gate on it, surface it in a UI) without first aggregating the whole turn, read it off the individual update with `update.EUAIActClassification`:
 
 ```csharp
 await foreach (var update in client.GetStreamingResponseAsync(messages))
@@ -122,25 +106,16 @@ await foreach (var update in client.GetStreamingResponseAsync(messages))
 
 **Streaming contract:**
 
-- The verdict rides on a **trailing side-channel update** emitted *after* the model's own output has
-  streamed; intermediate content updates return `null` from `EUAIActClassification`.
-- Classification is **best-effort**: on classifier failure the verdict is present but `Risk` is
-  `Risk.Unknown` (it never throws into your stream), so handle `Unknown` explicitly.
+- The verdict rides on a **trailing side-channel update** emitted *after* the model's own output has streamed; intermediate content updates return `null` from `EUAIActClassification`.
+- Classification is **best-effort**: on classifier failure the verdict is present but `Risk` is `Risk.Unknown` (it never throws into your stream), so handle `Unknown` explicitly.
 
 ## Microsoft Agent Framework (first-class)
 
-For [Microsoft Agent Framework](https://www.nuget.org/packages/Microsoft.Agents.AI) agents, classify at the
-**agent** level — not in the agent's `IChatClient` pipeline.
+For [Microsoft Agent Framework](https://www.nuget.org/packages/Microsoft.Agents.AI) agents, classify at the **agent** level — not in the agent's `IChatClient` pipeline.
 
-> **Why not the `IChatClient` pipeline?** An agent's run loop (e.g. `ChatClientAgent` +
-> `FunctionInvokingChatClient`) calls the underlying `IChatClient` **once per model round-trip**, looping
-> `model → tool → model → …` until it is done. `IChatClient` middleware sits *inside* that loop, so it would
-> classify **every intermediate step** (each one an extra LLM call) instead of the finished turn. Microsoft's
-> docs are explicit: chat-client middleware *"executes for each model call, including calls that send tool
-> results back to the model during a multi-turn tool calling sequence."*
+> **Why not the `IChatClient` pipeline?** An agent's run loop (e.g. `ChatClientAgent` + `FunctionInvokingChatClient`) calls the underlying `IChatClient` **once per model round-trip**, looping `model → tool → model → …` until it is done. `IChatClient` middleware sits *inside* that loop, so it would classify **every intermediate step** (each one an extra LLM call) instead of the finished turn. Microsoft's docs are explicit: chat-client middleware *"executes for each model call, including calls that send tool results back to the model during a multi-turn tool calling sequence."*
 
-`UseEUAIActClassification(classifier)` wraps any `AIAgent` so each run is classified **exactly once**, over
-the completed conversation:
+`UseEUAIActClassification(classifier)` wraps any `AIAgent` so each run is classified **exactly once**, over the completed conversation:
 
 ```csharp
 // `classifier` is any IChatClient used purely as the classification engine — it is NOT in the agent's
@@ -166,19 +141,13 @@ await foreach (var update in agent.RunStreamingAsync("Screen these CVs and short
 }
 ```
 
-`AgentResponse.EUAIActClassification` and `AgentResponseUpdate.EUAIActClassification` mirror the getters on the
-`IChatClient` side. This is built on the lightweight `Microsoft.Agents.AI.Abstractions` (the `DelegatingAIAgent`
-decorator base), so it works with **any** `AIAgent` and pulls in only the abstractions — not the full agent runtime.
+`AgentResponse.EUAIActClassification` and `AgentResponseUpdate.EUAIActClassification` mirror the getters on the `IChatClient` side. This is built on the lightweight `Microsoft.Agents.AI.Abstractions` (the `DelegatingAIAgent` decorator base), so it works with **any** `AIAgent` and pulls in only the abstractions — not the full agent runtime.
 
-If you'd rather drive the engine yourself, it is also exposed directly as
-`classifier.ClassifyEUAIActRiskAsync(conversation)` — give it any `IChatClient` and the full conversation, and
-it returns the verdict as the same best-effort side channel (never throws; `Risk.Unknown` on failure).
+If you'd rather drive the engine yourself, it is also exposed directly as `classifier.ClassifyEUAIActRiskAsync(conversation)` — give it any `IChatClient` and the full conversation, and it returns the verdict as the same best-effort side channel (never throws; `Risk.Unknown` on failure).
 
 ## Customisation
 
-Pass a `ClassificationOptions` to tailor the classification. Both properties are optional; leaving them
-unset preserves the defaults (built-in prompt, whole conversation classified). The same options apply to
-**every** entry point shown above — the middleware, the agent wrapper, and `ClassifyEUAIActRiskAsync`.
+Pass a `ClassificationOptions` to tailor the classification. Every property is optional; leaving them unset preserves the defaults (built-in prompt, whole conversation classified, temperature 0). The same options apply to **every** entry point shown above — the middleware, the agent wrapper, and `ClassifyEUAIActRiskAsync`.
 
 ```csharp
 var options = new ClassificationOptions
@@ -191,6 +160,12 @@ var options = new ClassificationOptions
     // and returns the subset to classify. A turn is a user message and the assistant reply, so the last
     // two turns are the last four messages. Leave null to classify the whole conversation.
     ConversationFilter = messages => messages.TakeLast(4),
+
+    // Sampling temperature for the classification call. Leave null for 0 — deterministic verdicts. Raise it
+    // only if your model degrades or errors at 0; the tier for one and the same conversation then varies
+    // between runs. Use ClassificationOptions.ModelDefaultTemperature to send no temperature at all
+    // (reasoning models and endpoints that reject the parameter).
+    Temperature = 0.0F,
 };
 
 // IChatClient middleware
@@ -217,11 +192,7 @@ The filter runs first; empty-text messages are still dropped afterwards.
 
 ## Notes
 
-- **Classifies the use case, not the topic.** A request that merely *mentions* a sensitive subject
-  stays `Minimal` if the AI is only acting as a general assistant; the tier reflects the AI system's
-  purpose, as the Act intends.
-- **Requires a structured-output-capable model** for the classification call (it is constrained to a
-  JSON schema and run at `temperature = 0` for stability).
-- General-purpose AI model obligations (Chapter V) are out of scope — the middleware judges the
-  **use-case** risk tier of a conversation, not model-provider duties.
+- **Classifies the use case, not the topic.** A request that merely *mentions* a sensitive subject stays `Minimal` if the AI is only acting as a general assistant; the tier reflects the AI system's purpose, as the Act intends.
+- **Requires a structured-output-capable model** for the classification call (it is constrained to a JSON schema and run at `temperature = 0` for stability, configurable via `ClassificationOptions`).
+- General-purpose AI model obligations (Chapter V) are out of scope — the middleware judges the **use-case** risk tier of a conversation, not model-provider duties.
 - This is a classification aid, not legal advice or a certified compliance assessment.

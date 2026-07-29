@@ -51,10 +51,14 @@ internal sealed class RecordingClassifier : IChatClient
     /// <summary>The messages received on the most recent classification call (system prompt + transcript).</summary>
     public IReadOnlyList<ChatMessage>? LastMessages { get; private set; }
 
+    /// <summary>The <see cref="ChatOptions"/> received on the most recent classification call.</summary>
+    public ChatOptions? LastOptions { get; private set; }
+
     public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
     {
         Calls++;
         LastMessages = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+        LastOptions = options;
         if (_throw is not null) throw _throw;
         // GetResponseAsync<Classification> parses the assistant message text back into a Classification.
         return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, JsonSerializer.Serialize(_verdict))));
@@ -98,6 +102,9 @@ internal sealed class DualRoleChatClient : IChatClient
     /// <summary>The messages received on the most recent classification call (system prompt + transcript).</summary>
     public IReadOnlyList<ChatMessage>? LastClassificationMessages { get; private set; }
 
+    /// <summary>The <see cref="ChatOptions"/> received on the most recent classification call.</summary>
+    public ChatOptions? LastClassificationOptions { get; private set; }
+
     private static bool IsClassificationCall(ChatOptions? options) => options?.ResponseFormat is ChatResponseFormatJson;
 
     public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
@@ -106,6 +113,7 @@ internal sealed class DualRoleChatClient : IChatClient
         {
             ClassificationCalls++;
             LastClassificationMessages = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
+            LastClassificationOptions = options;
             if (_classifierThrow is not null) throw _classifierThrow;
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, JsonSerializer.Serialize(_verdict))));
         }

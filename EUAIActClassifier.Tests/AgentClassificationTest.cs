@@ -65,13 +65,14 @@ public sealed class AgentClassificationTest
     }
 
     [TestMethod]
-    public async Task RunAsync_PassesOptionsThrough_PromptAndFilter()
+    public async Task RunAsync_PassesOptionsThrough_PromptFilterAndTemperature()
     {
         var classifier = new RecordingClassifier(HighVerdict);
         var options = new ClassificationOptions
         {
             SystemPrompt = "CUSTOM",
             ConversationFilter = m => m.TakeLast(1), // of the full conversation (input + reply) → just the reply
+            Temperature = 0.3F,
         };
         var agent = new StubAgent("Here is the answer.").UseEUAIActClassification(classifier, options);
 
@@ -81,6 +82,7 @@ public sealed class AgentClassificationTest
         var transcript = classifier.LastMessages!.Single(m => m.Role == ChatRole.User).Text;
         StringAssert.Contains(transcript, "Here is the answer.");
         Assert.IsFalse(transcript.Contains("Screen these CVs."), "The filter should have dropped the earlier input message.");
+        Assert.AreEqual(0.3F, classifier.LastOptions?.Temperature);
     }
 
     [TestMethod]

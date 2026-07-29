@@ -30,8 +30,9 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
     /// <param name="innerAgent">The agent whose runs are classified.</param>
     /// <param name="classifier">The chat client used as the classification engine (not part of the inference path).</param>
     /// <param name="options">
-    /// Optional configuration — a custom system prompt and/or a conversation filter. When <see langword="null"/>,
-    /// the built-in prompt is used and the whole conversation is classified.
+    /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature. When
+    /// <see langword="null"/>, the built-in prompt is used, the whole conversation is classified and the classifier
+    /// runs at temperature 0.
     /// </param>
     public EUAIActClassificationAgent(AIAgent innerAgent, IChatClient classifier, ClassificationOptions? options = null)
         : base(innerAgent)
@@ -102,8 +103,9 @@ public static class ClassificationAgentExtensions
         /// </summary>
         /// <param name="classifier">The chat client used as the classification engine (not part of the inference path).</param>
         /// <param name="options">
-        /// Optional configuration — a custom system prompt and/or a conversation filter. When <see langword="null"/>,
-        /// the built-in prompt is used and the whole conversation is classified.
+        /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature. When
+        /// <see langword="null"/>, the built-in prompt is used, the whole conversation is classified and the
+        /// classifier runs at temperature 0.
         /// </param>
         /// <returns>An <see cref="AIAgent"/> that classifies each run.</returns>
         public AIAgent UseEUAIActClassification(IChatClient classifier, ClassificationOptions? options = null) =>
