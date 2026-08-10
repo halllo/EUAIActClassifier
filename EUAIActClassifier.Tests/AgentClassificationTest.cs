@@ -85,6 +85,66 @@ public sealed class AgentClassificationTest
         Assert.AreEqual(0.3F, classifier.LastOptions?.Temperature);
     }
 
+    /// <summary>
+    /// A run that stops to ask for a tool approval has not completed its turn: the tool has not run and there is no
+    /// answer, so it is not classified — no classification call is spent, and the verdict stays
+    /// <see cref="Risk.Unknown"/> so a host that surfaces High-and-above sees nothing for the round-trip.
+    /// </summary>
+    [TestMethod]
+    public async Task RunAsync_RunStopsForToolApproval_DoesNotClassify()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var pending = new ToolApprovalRequestContent("approval-1", new FunctionCallContent("call-1", "screen_cvs"));
+        var agent = StubAgent.Producing(pending).UseEUAIActClassification(classifier);
+
+        var response = await agent.RunAsync(Input);
+
+        Assert.AreEqual(0, classifier.Calls, "An interrupted run must not spend a classification call.");
+        Assert.AreEqual(Risk.Unknown, response.EUAIActClassification?.Risk);
+        StringAssert.Contains(response.EUAIActClassification?.Reason, "approval", "The reason should name why it was skipped.");
+    }
+
+    /// <summary>The streaming path skips the same run, and still emits its trailing verdict update.</summary>
+    [TestMethod]
+    public async Task RunStreamingAsync_RunStopsForToolApproval_DoesNotClassify()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var pending = new ToolApprovalRequestContent("approval-1", new FunctionCallContent("call-1", "screen_cvs"));
+        var agent = StubAgent.Producing(pending).UseEUAIActClassification(classifier);
+
+        var updates = new List<AgentResponseUpdate>();
+        await foreach (var update in agent.RunStreamingAsync(Input))
+        {
+            updates.Add(update);
+        }
+
+        Assert.AreEqual(0, classifier.Calls, "An interrupted streaming run must not spend a classification call.");
+        Assert.AreEqual(Risk.Unknown, updates[^1].EUAIActClassification?.Risk);
+    }
+
+    /// <summary>
+    /// The other half of the rule: once the decision is in, the turn completes and is classified as usual. It is the
+    /// request being <i>unanswered</i> that suspends the verdict, not its presence — otherwise the resume run, which
+    /// carries the answered request, would never be classified either.
+    /// </summary>
+    [TestMethod]
+    public async Task RunAsync_ApprovalAnswered_ClassifiesTheCompletedTurn()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var agent = new StubAgent("I have screened the applicants.").UseEUAIActClassification(classifier);
+        var call = new FunctionCallContent("call-1", "screen_cvs");
+
+        var response = await agent.RunAsync(
+        [
+            new ChatMessage(ChatRole.User, "Screen these CVs."),
+            new ChatMessage(ChatRole.Assistant, [new ToolApprovalRequestContent("approval-1", call)]),
+            new ChatMessage(ChatRole.User, [new ToolApprovalResponseContent("approval-1", true, call)]),
+        ]);
+
+        Assert.AreEqual(1, classifier.Calls, "An answered approval must not suspend the verdict.");
+        Assert.AreEqual(Risk.High, response.EUAIActClassification?.Risk);
+    }
+
     [TestMethod]
     public async Task RunStreamingAsync_ClassifierThrows_RecordsUnknown_DoesNotThrow()
     {

@@ -20,6 +20,12 @@ namespace EUAIActClassifier;
 /// Use this <b>instead of</b>, not in addition to, the <see cref="IChatClient"/>-level middleware on the same agent:
 /// installing both classifies every turn twice (once per model call, then once per run).
 /// </para>
+/// <para>
+/// A run that ends by asking for a tool approval has not completed its turn, so it is not classified: the verdict
+/// is recorded as <see cref="Risk.Unknown"/> without a classification call, and the turn is judged on the run that
+/// resumes with the user's decision and produces the answer. A host that surfaces verdicts above a threshold
+/// therefore sees nothing for the approval round-trip, since <see cref="Risk.Unknown"/> is the lowest tier.
+/// </para>
 /// </remarks>
 public sealed class EUAIActClassificationAgent : DelegatingAIAgent
 {

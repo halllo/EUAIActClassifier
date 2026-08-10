@@ -11,6 +11,11 @@ namespace EUAIActClassifier;
 /// <remarks>
 /// Classification is a best-effort side channel: it never throws into the primary chat response. If the
 /// classification call fails it is recorded as <see cref="Risk.Unknown"/> instead.
+/// <para>
+/// Only a complete turn is classified. A conversation left waiting on a tool approval is not one — see
+/// <see cref="IsAwaitingToolApproval"/> — and is recorded as <see cref="Risk.Unknown"/> without a classification
+/// call, leaving the verdict to the turn that resumes and finishes.
+/// </para>
 /// </remarks>
 public static class ClassificationMiddleware
 {
@@ -110,7 +115,8 @@ public static class ClassificationMiddleware
         /// <param name="cancellationToken">A token to cancel the classification call.</param>
         /// <returns>
         /// The inferred <see cref="Classification"/>. This is a best-effort side channel: it never throws, returning
-        /// a <see cref="Risk.Unknown"/> verdict on failure or when there is nothing to classify.
+        /// a <see cref="Risk.Unknown"/> verdict on failure, when there is nothing to classify, or when the
+        /// conversation is still waiting on a tool approval — the last two without calling the model at all.
         /// </returns>
         /// <remarks>
         /// Call this <b>once</b> at a layer that runs once per logical turn. In an agent framework whose run loop
@@ -262,7 +268,8 @@ public static class ClassificationMiddleware
     /// <param name="cancellationToken">A token to cancel the classification call.</param>
     /// <returns>
     /// The <see cref="Classification"/> inferred for the conversation. Returns a <see cref="Risk.Unknown"/>
-    /// classification when there is no text to classify or the model does not return a usable result.
+    /// classification when the conversation awaits a tool approval, when there is no text to classify, or when the
+    /// model does not return a usable result.
     /// </returns>
     private static async Task<Classification> ClassifyCoreAsync(
         IChatClient chatClient,
@@ -273,6 +280,13 @@ public static class ClassificationMiddleware
         if (conversation is null) throw new ArgumentNullException(nameof(conversation));
 
         var materialized = conversation as IReadOnlyList<ChatMessage> ?? conversation.ToList();
+
+        // Checked before the filter so a ConversationFilter cannot hide the pending approval by trimming it away.
+        if (IsAwaitingToolApproval(materialized))
+        {
+            return Unknown("The turn is awaiting a tool approval, so it is not complete.");
+        }
+
         var filtered = options?.ConversationFilter is { } filter ? filter(materialized) : materialized;
 
         var transcript = filtered
@@ -319,6 +333,44 @@ public static class ClassificationMiddleware
         return additionalProperties.TryGetValue(ClassificationKey, out var value) && value is Classification classification
             ? classification
             : additionalProperties.Values.OfType<Classification>().FirstOrDefault();
+    }
+
+    /// <summary>
+    /// Whether the conversation stops at a tool approval nobody has answered — a
+    /// <see cref="ToolApprovalRequestContent"/> whose <c>RequestId</c> no
+    /// <see cref="ToolApprovalResponseContent"/> in the conversation matches.
+    /// </summary>
+    /// <remarks>
+    /// Such a conversation is half a turn: the model asked to call a tool that needs a human decision, the tool
+    /// has not run and no answer exists. There is a use case to name but no use of it yet, and the pending call
+    /// contributes no text, so a verdict here would judge the request alone — and it would be paid for again on
+    /// the run that resumes and actually completes the turn. Matching ids rather than inspecting the last message
+    /// keeps that resume classifiable: it carries the answered request, and an answered request is not a pending
+    /// one.
+    /// </remarks>
+    private static bool IsAwaitingToolApproval(IReadOnlyList<ChatMessage> conversation)
+    {
+        HashSet<string>? answered = null;
+        foreach (var message in conversation)
+        {
+            foreach (var response in message.Contents.OfType<ToolApprovalResponseContent>())
+            {
+                (answered ??= new HashSet<string>(StringComparer.Ordinal)).Add(response.RequestId);
+            }
+        }
+
+        foreach (var message in conversation)
+        {
+            foreach (var request in message.Contents.OfType<ToolApprovalRequestContent>())
+            {
+                if (answered is null || !answered.Contains(request.RequestId))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private static Classification Unknown(string reason) =>

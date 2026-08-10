@@ -5,19 +5,34 @@ using Microsoft.Extensions.AI;
 
 namespace EUAIActClassifier;
 
-/// <summary>An inner agent that streams a fixed set of assistant text chunks (one update each).</summary>
-internal sealed class StubAgent(params string[] chunks) : AIAgent
+/// <summary>An inner agent that streams a fixed set of assistant messages (one update each).</summary>
+internal sealed class StubAgent : AIAgent
 {
+    private readonly IReadOnlyList<ChatMessage> _messages;
+
+    /// <summary>An agent whose run is a plain answer: one assistant text chunk per update.</summary>
+    public StubAgent(params string[] chunks)
+        => _messages = [.. chunks.Select(c => new ChatMessage(ChatRole.Assistant, c))];
+
+    private StubAgent(IReadOnlyList<ChatMessage> messages) => _messages = messages;
+
+    /// <summary>
+    /// An agent whose run ends on these contents rather than on text — how an interrupted run looks, where the last
+    /// thing produced is a <see cref="ToolApprovalRequestContent"/> waiting for a decision and no answer exists.
+    /// </summary>
+    public static StubAgent Producing(params AIContent[] contents)
+        => new([new ChatMessage(ChatRole.Assistant, [.. contents])]);
+
     protected override Task<AgentResponse> RunCoreAsync(
         IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options, CancellationToken cancellationToken)
-        => Task.FromResult(new AgentResponse(chunks.Select(c => new ChatMessage(ChatRole.Assistant, c)).ToList()));
+        => Task.FromResult(new AgentResponse([.. _messages]));
 
     protected override async IAsyncEnumerable<AgentResponseUpdate> RunCoreStreamingAsync(
         IEnumerable<ChatMessage> messages, AgentSession? session, AgentRunOptions? options, [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        foreach (var c in chunks)
+        foreach (var message in _messages)
         {
-            yield return new AgentResponseUpdate(ChatRole.Assistant, c);
+            yield return new AgentResponseUpdate(ChatRole.Assistant, message.Contents);
         }
         await Task.CompletedTask;
     }
