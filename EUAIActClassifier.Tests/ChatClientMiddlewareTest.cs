@@ -113,6 +113,84 @@ public sealed class ChatClientMiddlewareTest
         Assert.AreEqual(Risk.High, updates[^1].EUAIActClassification?.Risk);
     }
 
+    /// <summary>
+    /// An earlier turn left half way — a tool call that never got its result, an approval nobody answered — is over
+    /// once the user asks something new, so the new turn is classified.
+    /// </summary>
+    [TestMethod]
+    public async Task Streaming_OpenToolCallOfAnEarlierTurn_DoesNotStopClassification()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "Here is the ranking.");
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var updates = await client.GetStreamingResponseAsync(
+        [
+            new ChatMessage(ChatRole.User, "Find the CVs."),
+            new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "search_cvs")]),
+            new ChatMessage(ChatRole.Assistant, [new ToolApprovalRequestContent("approval-1", new FunctionCallContent("call-2", "screen_cvs"))]),
+            new ChatMessage(ChatRole.User, "Rank them instead."),
+        ]).ToListAsync();
+
+        Assert.AreEqual(1, inner.ClassificationCalls);
+        Assert.AreEqual(Risk.High, updates[^1].EUAIActClassification?.Risk);
+    }
+
+    /// <summary>A question that is only a file is a question too: it ends the earlier turn like a typed one.</summary>
+    [TestMethod]
+    public async Task NonStreaming_FileOnlyQuestionAfterAnOpenToolCall_IsClassified()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "Here is the ranking.");
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var response = await client.GetResponseAsync(
+        [
+            new ChatMessage(ChatRole.User, "Find the CVs."),
+            new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "search_cvs")]),
+            new ChatMessage(ChatRole.User, [new DataContent(new byte[] { 1, 2, 3 }, "application/pdf")]),
+        ]);
+
+        Assert.AreEqual(1, inner.ClassificationCalls);
+        Assert.AreEqual(Risk.High, response.EUAIActClassification?.Risk);
+    }
+
+    /// <summary>
+    /// An approval answer is a user message, but it continues the turn it answers rather than starting one: a call of
+    /// that turn still waiting on its result keeps it incomplete.
+    /// </summary>
+    [TestMethod]
+    public async Task NonStreaming_ApprovalAnswerDoesNotEndTheTurnItAnswers()
+    {
+        var approved = new FunctionCallContent("call-2", "screen_cvs");
+        var inner = new DualRoleChatClient(HighVerdict, "Screening now.");
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var response = await client.GetResponseAsync(
+        [
+            new ChatMessage(ChatRole.User, "Screen these CVs."),
+            new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "read_cvs"), new ToolApprovalRequestContent("approval-1", approved)]),
+            new ChatMessage(ChatRole.User, [new ToolApprovalResponseContent("approval-1", true, approved)]),
+        ]);
+
+        Assert.AreEqual(0, inner.ClassificationCalls);
+        Assert.IsNull(response.EUAIActClassification);
+    }
+
+    /// <summary>With a classifier of its own, the middleware classifies with it and leaves the answering client to answer.</summary>
+    [TestMethod]
+    public async Task SeparateClassifier_ClassifiesInsteadOfTheAnsweringClient()
+    {
+        var inner = new DualRoleChatClient(new Classification { Risk = Risk.Minimal, Category = "Minimal risk", Reason = "" }, "Here is the answer.");
+        var classifier = new RecordingClassifier(HighVerdict);
+        var client = inner.AsBuilder().UseEUAIActClassification(classifier, new() { Temperature = ClassificationOptions.ModelDefaultTemperature }).Build();
+
+        var updates = await client.GetStreamingResponseAsync(Input).ToListAsync();
+
+        Assert.AreEqual(0, inner.ClassificationCalls);
+        Assert.AreEqual(1, classifier.Calls);
+        Assert.IsNull(classifier.LastOptions?.Temperature, "The options apply to the classifier's call.");
+        Assert.AreEqual(Risk.High, updates[^1].EUAIActClassification?.Risk);
+    }
+
     [TestMethod]
     public async Task ClassifierThrows_RecordsUnknown_DoesNotThrow()
     {

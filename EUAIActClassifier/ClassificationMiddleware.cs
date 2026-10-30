@@ -108,8 +108,29 @@ public static class ClassificationMiddleware
         /// <returns>The <paramref name="builder"/> so that calls can be chained.</returns>
         public ChatClientBuilder UseEUAIActClassification(ClassificationOptions? options = null) =>
             builder.Use(
-                (messages, chatOptions, inner, ct) => GetResponseAsync(messages, chatOptions, inner, options, ct),
-                (messages, chatOptions, inner, ct) => GetStreamingResponseAsync(messages, chatOptions, inner, options, ct));
+                (messages, chatOptions, inner, ct) => GetResponseAsync(messages, chatOptions, inner, inner, options, ct),
+                (messages, chatOptions, inner, ct) => GetStreamingResponseAsync(messages, chatOptions, inner, inner, options, ct));
+
+        /// <summary>
+        /// Adds the classification middleware like <see cref="UseEUAIActClassification(ChatClientBuilder, ClassificationOptions?)"/>,
+        /// but classifies with <paramref name="classifier"/> instead of the client the pipeline answers with.
+        /// </summary>
+        /// <param name="classifier">
+        /// The chat client used as the classification engine (not part of the inference path) — for example a
+        /// cheaper, faster model than the one that answers.
+        /// </param>
+        /// <param name="options">
+        /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature.
+        /// The temperature is sent to <paramref name="classifier"/>, so it has to suit that model.
+        /// </param>
+        /// <returns>The <paramref name="builder"/> so that calls can be chained.</returns>
+        public ChatClientBuilder UseEUAIActClassification(IChatClient classifier, ClassificationOptions? options = null)
+        {
+            if (classifier is null) throw new ArgumentNullException(nameof(classifier));
+            return builder.Use(
+                (messages, chatOptions, inner, ct) => GetResponseAsync(messages, chatOptions, inner, classifier, options, ct),
+                (messages, chatOptions, inner, ct) => GetStreamingResponseAsync(messages, chatOptions, inner, classifier, options, ct));
+        }
     }
 
     extension(IChatClient classifierClient)
@@ -193,6 +214,7 @@ public static class ClassificationMiddleware
         IEnumerable<ChatMessage> messages,
         ChatOptions? options,
         IChatClient inner,
+        IChatClient classifier,
         ClassificationOptions? classificationOptions,
         CancellationToken cancellationToken)
     {
@@ -206,7 +228,7 @@ public static class ClassificationMiddleware
             return response;
         }
 
-        var classification = await ClassifySafelyAsync(inner, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
+        var classification = await ClassifySafelyAsync(classifier, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
         if (!IsAttached(classification, classificationOptions))
         {
             return response;
@@ -229,6 +251,7 @@ public static class ClassificationMiddleware
         IEnumerable<ChatMessage> messages,
         ChatOptions? options,
         IChatClient inner,
+        IChatClient classifier,
         ClassificationOptions? classificationOptions,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
@@ -255,7 +278,7 @@ public static class ClassificationMiddleware
             yield break;
         }
 
-        var classification = await ClassifySafelyAsync(inner, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
+        var classification = await ClassifySafelyAsync(classifier, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
         if (!IsAttached(classification, classificationOptions))
         {
             yield break;
@@ -275,14 +298,14 @@ public static class ClassificationMiddleware
     /// never lost.
     /// </summary>
     private static async Task<Classification> ClassifySafelyAsync(
-        IChatClient inner,
+        IChatClient classifier,
         IEnumerable<ChatMessage> conversation,
         ClassificationOptions? options,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await ClassifyCoreAsync(inner, conversation, options, cancellationToken).ConfigureAwait(false);
+            return await ClassifyCoreAsync(classifier, conversation, options, cancellationToken).ConfigureAwait(false);
         }
         catch (OperationCanceledException)
         {
@@ -409,9 +432,29 @@ public static class ClassificationMiddleware
         IsAwaitingToolApproval(conversation) || IsAwaitingToolResult(conversation);
 
     /// <summary>
-    /// Whether the conversation stops at a tool approval nobody has answered — a
+    /// The current turn: the conversation from the last user message that asks something on. Only that turn can be left
+    /// half way. An earlier turn that never got its tool result or approval answer — a run cut off, or the user asking
+    /// something else instead — is over, and must not keep every later turn from being classified. A user message that
+    /// only answers the turn — an approval decision, a tool result — continues it, so a resumed turn still reaches back
+    /// to the request it answers.
+    /// </summary>
+    private static IEnumerable<ChatMessage> CurrentTurn(IReadOnlyList<ChatMessage> conversation)
+    {
+        for (var i = conversation.Count - 1; i >= 0; i--)
+        {
+            if (conversation[i].Role == ChatRole.User && conversation[i].Contents.Any(c => c is not ToolApprovalResponseContent and not FunctionResultContent))
+            {
+                return conversation.Skip(i);
+            }
+        }
+
+        return conversation;
+    }
+
+    /// <summary>
+    /// Whether the current turn stops at a tool approval nobody has answered — a
     /// <see cref="ToolApprovalRequestContent"/> whose <c>RequestId</c> no
-    /// <see cref="ToolApprovalResponseContent"/> in the conversation matches.
+    /// <see cref="ToolApprovalResponseContent"/> in the turn matches.
     /// </summary>
     /// <remarks>
     /// Such a conversation is half a turn: the model asked to call a tool that needs a human decision, the tool
@@ -423,8 +466,9 @@ public static class ClassificationMiddleware
     /// </remarks>
     private static bool IsAwaitingToolApproval(IReadOnlyList<ChatMessage> conversation)
     {
+        var turn = CurrentTurn(conversation).ToList();
         HashSet<string>? answered = null;
-        foreach (var message in conversation)
+        foreach (var message in turn)
         {
             foreach (var response in message.Contents.OfType<ToolApprovalResponseContent>())
             {
@@ -432,7 +476,7 @@ public static class ClassificationMiddleware
             }
         }
 
-        foreach (var message in conversation)
+        foreach (var message in turn)
         {
             foreach (var request in message.Contents.OfType<ToolApprovalRequestContent>())
             {
@@ -447,8 +491,8 @@ public static class ClassificationMiddleware
     }
 
     /// <summary>
-    /// Whether the conversation stops at a tool call nobody has answered — a <see cref="FunctionCallContent"/>
-    /// whose <c>CallId</c> no <see cref="FunctionResultContent"/> in the conversation matches.
+    /// Whether the current turn stops at a tool call nobody has answered — a <see cref="FunctionCallContent"/>
+    /// whose <c>CallId</c> no <see cref="FunctionResultContent"/> in the turn matches.
     /// </summary>
     /// <remarks>
     /// The same half a turn as an open approval, reached another way: the run hands a tool call to its caller to
@@ -458,8 +502,9 @@ public static class ClassificationMiddleware
     /// </remarks>
     private static bool IsAwaitingToolResult(IReadOnlyList<ChatMessage> conversation)
     {
+        var turn = CurrentTurn(conversation).ToList();
         HashSet<string>? answered = null;
-        foreach (var message in conversation)
+        foreach (var message in turn)
         {
             foreach (var result in message.Contents.OfType<FunctionResultContent>())
             {
@@ -467,7 +512,7 @@ public static class ClassificationMiddleware
             }
         }
 
-        foreach (var message in conversation)
+        foreach (var message in turn)
         {
             foreach (var call in message.Contents.OfType<FunctionCallContent>())
             {

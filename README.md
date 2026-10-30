@@ -38,6 +38,8 @@ Only a **complete turn** is classified. A conversation left waiting on a tool ap
 
 The same goes for a tool call left without a result — a `FunctionCallContent` that no `FunctionResultContent` answers, as when a run hands a client-side tool to its caller to execute. The turn is judged once the result is back and the answer exists.
 
+Only the **current** turn — from the last user message that asks something, not one that only answers an approval — is checked. A call or approval an earlier turn left open, because its run was cut off or the user asked something else instead, does not keep later turns from being classified.
+
 The [Microsoft Agent Framework](#microsoft-agent-framework-first-class) variant works the same way but runs at the **agent** level — it classifies once over the *completed* conversation of an agent run (after any tool-calling round-trips), rather than per model call. See that section for why.
 
 ## Risk tiers
@@ -86,6 +88,15 @@ Console.WriteLine(classification?.Category);  // e.g. "Minimal risk – general 
 Console.WriteLine(classification?.Reason);    // short justification
 ```
 
+By default the client that answers also classifies. To classify with another one — often a cheaper, faster model — pass it in; the [options](#customisation) then apply to that client's call:
+
+```csharp
+var client = openAiClient.AsIChatClient()
+    .AsBuilder()
+    .UseEUAIActClassification(classifier: cheapClient)
+    .Build();
+```
+
 The same getter works for streaming calls — collect the updates into a response and read it back:
 
 ```csharp
@@ -119,7 +130,7 @@ For [Microsoft Agent Framework](https://www.nuget.org/packages/Microsoft.Agents.
 
 > **Both classify once per turn.** An agent's run loop (e.g. `ChatClientAgent` + `FunctionInvokingChatClient`) calls the underlying `IChatClient` **once per model round-trip**, looping `model → tool → model → …` until it is done, so chat-client middleware sees every step. Every step but the last ends on a tool call without a result, which is not a complete turn: it carries no verdict and costs no classification call. Only the model call that answers is classified.
 >
-> The difference is where the verdict ends up. In the `IChatClient` pipeline it lands on the answering message *inside* the agent's run, so the agent's chat history provider stores it with the turn. The agent-level wrapper below classifies after the run is over — after the history is stored — and lets you use a separate classifier client.
+> The difference is where the verdict ends up. In the `IChatClient` pipeline it lands on the answering message *inside* the agent's run, so the agent's chat history provider stores it with the turn. The agent-level wrapper below classifies after the run is over — after the history is stored. Both take a separate classifier client.
 
 `UseEUAIActClassification(classifier)` wraps any `AIAgent` so each run is classified **exactly once**, over the completed conversation:
 
