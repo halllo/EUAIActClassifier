@@ -215,4 +215,27 @@ public sealed class AgentClassificationTest
         Assert.AreEqual(Risk.Unknown, verdict?.Risk);
         StringAssert.Contains(verdict?.Reason, "cancel", "Cancellation should map to the cancelled-reason path.");
     }
+
+    [TestMethod]
+    public async Task RunStreamingAsync_VerdictBelowMinimumRisk_IsNotAttached()
+    {
+        var classifier = new RecordingClassifier(new Classification { Risk = Risk.Limited, Category = "Article 50 transparency", Reason = "Chatbot." });
+        var agent = new StubAgent("one ", "two").UseEUAIActClassification(classifier, new ClassificationOptions { MinimumRisk = Risk.High });
+
+        var updates = await agent.RunStreamingAsync(Input).ToListAsync();
+
+        Assert.AreEqual(1, classifier.Calls);
+        Assert.IsTrue(updates.All(u => u.EUAIActClassification is null));
+    }
+
+    [TestMethod]
+    public async Task RunAsync_VerdictAtMinimumRisk_IsAttached()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var agent = new StubAgent("Here is the answer.").UseEUAIActClassification(classifier, new ClassificationOptions { MinimumRisk = Risk.High });
+
+        var response = await agent.RunAsync(Input);
+
+        Assert.AreEqual(Risk.High, response.EUAIActClassification?.Risk);
+    }
 }

@@ -71,6 +71,10 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
         var classification = await _classifier
             .ClassifyEUAIActRiskAsync(conversation, _options, cancellationToken)
             .ConfigureAwait(false);
+        if (!ClassificationMiddleware.IsAttached(classification, _options))
+        {
+            return response;
+        }
 
         (response.AdditionalProperties ??= [])[ClassificationMiddleware.ClassificationKey] = classification;
         return response;
@@ -105,6 +109,10 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
         var classification = await _classifier
             .ClassifyEUAIActRiskAsync(conversation, _options, cancellationToken)
             .ConfigureAwait(false);
+        if (!ClassificationMiddleware.IsAttached(classification, _options))
+        {
+            yield break;
+        }
 
         yield return new AgentResponseUpdate
         {

@@ -19,8 +19,15 @@ namespace EUAIActClassifier;
 /// </remarks>
 public static class ClassificationMiddleware
 {
-    /// <summary>The key under which the classification is stored in an <see cref="AdditionalPropertiesDictionary"/>.</summary>
-    internal const string ClassificationKey = "EUAIActClassifier.Classification";
+    /// <summary>
+    /// The key under which the classification is stored in an <see cref="AdditionalPropertiesDictionary"/> — on the
+    /// answering message, on the response and on the trailing streaming update.
+    /// </summary>
+    /// <remarks>
+    /// A host that stores conversations stores the verdict with the answering message under this key. Remove it
+    /// before such a stored message goes back to a model, if the model should not read the verdict of its own answer.
+    /// </remarks>
+    public const string ClassificationKey = "EUAIActClassifier.Classification";
 
     /// <summary>
     /// System prompt instructing the model to classify a conversation into one of the EU AI Act risk tiers.
@@ -86,9 +93,12 @@ public static class ClassificationMiddleware
         /// classified against the EU AI Act risk tiers.
         /// </summary>
         /// <remarks>
+        /// With <see cref="ClassificationOptions.MinimumRisk"/> set, a verdict below it is not attached either.
+        /// <para>
         /// A response that ends the turn half way — on a tool call without a result, or on a tool approval nobody
         /// has answered — carries no verdict at all and costs no classification call. In a tool-calling loop that is
         /// every response but the last, so the loop is classified once, at the model call that answers.
+        /// </para>
         /// </remarks>
         /// <param name="options">
         /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature.
@@ -197,6 +207,10 @@ public static class ClassificationMiddleware
         }
 
         var classification = await ClassifySafelyAsync(inner, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
+        if (!IsAttached(classification, classificationOptions))
+        {
+            return response;
+        }
 
         var lastMessage = response.Messages.LastOrDefault();
         if (lastMessage is not null)
@@ -242,6 +256,10 @@ public static class ClassificationMiddleware
         }
 
         var classification = await ClassifySafelyAsync(inner, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
+        if (!IsAttached(classification, classificationOptions))
+        {
+            yield break;
+        }
 
         yield return new ChatResponseUpdate
         {
@@ -348,15 +366,40 @@ public static class ClassificationMiddleware
     /// <remarks>
     /// Falls back to a value-type scan: the verdict is always stored as a <see cref="Classification"/>, so even if
     /// the storage key changes or a host re-homes the property onto a different carrier, the value is still found.
+    /// A message read back from JSON storage holds the verdict as a <see cref="JsonElement"/> under the key; that is
+    /// read too, so a stored conversation shows its verdicts again.
     /// </remarks>
     internal static Classification? GetClassification(AdditionalPropertiesDictionary? additionalProperties)
     {
         if (additionalProperties is null) return null;
 
-        return additionalProperties.TryGetValue(ClassificationKey, out var value) && value is Classification classification
-            ? classification
-            : additionalProperties.Values.OfType<Classification>().FirstOrDefault();
+        if (additionalProperties.TryGetValue(ClassificationKey, out var value))
+        {
+            switch (value)
+            {
+                case Classification classification:
+                    return classification;
+                case JsonElement { ValueKind: JsonValueKind.Object } stored:
+                    try
+                    {
+                        return stored.Deserialize<Classification>(StoredJson);
+                    }
+                    catch (JsonException)
+                    {
+                        return null;
+                    }
+            }
+        }
+
+        return additionalProperties.Values.OfType<Classification>().FirstOrDefault();
     }
+
+    // Case-insensitive, so a verdict stored by a host that names properties in camelCase reads back as well.
+    private static readonly JsonSerializerOptions StoredJson = new(JsonSerializerDefaults.Web);
+
+    /// <summary>Whether <paramref name="classification"/> reaches the <see cref="ClassificationOptions.MinimumRisk"/> to be attached.</summary>
+    internal static bool IsAttached(Classification classification, ClassificationOptions? options) =>
+        options?.MinimumRisk is not { } minimum || classification.Risk >= minimum;
 
     /// <summary>
     /// Whether the conversation stops half way through its turn — at a tool approval nobody has answered or at a tool

@@ -174,6 +174,11 @@ var options = new ClassificationOptions
     // between runs. Use ClassificationOptions.ModelDefaultTemperature to send no temperature at all
     // (reasoning models and endpoints that reject the parameter).
     Temperature = 0.0F,
+
+    // Attach only verdicts from this tier up (the middleware and the agent wrapper). Lower verdicts are still
+    // classified but not attached, so nothing is stored for them. Unknown, a failed classification, is below
+    // every tier. Leave null to attach every verdict.
+    MinimumRisk = Risk.High,
 };
 
 // IChatClient middleware
@@ -187,6 +192,10 @@ var verdict = await classifier.ClassifyEUAIActRiskAsync(conversation, options);
 ```
 
 The filter runs first; empty-text messages are still dropped afterwards.
+
+## Storing the verdict
+
+The verdict rides on the answering message's `AdditionalProperties` under `ClassificationMiddleware.ClassificationKey`, so a chat history store keeps it with the message. A message read back from JSON holds it as a `JsonElement`; the getters read that too (PascalCase or camelCase). Remove the key before a stored message goes back to a model if the model should not see the verdict of its own answers.
 
 ## The result
 

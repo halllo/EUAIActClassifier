@@ -251,4 +251,72 @@ public sealed class ChatClientMiddlewareTest
         Assert.IsFalse(transcript.Contains("FIRST"), "The filter should have dropped earlier input messages.");
         Assert.AreEqual(0.3F, inner.LastClassificationOptions?.Temperature);
     }
+
+    /// <summary>
+    /// A verdict below <see cref="ClassificationOptions.MinimumRisk"/> is classified but not attached: no trailing
+    /// update, nothing on the answering message or the response.
+    /// </summary>
+    [TestMethod]
+    public async Task Streaming_VerdictBelowMinimumRisk_IsNotAttached()
+    {
+        var minimal = new Classification { Risk = Risk.Minimal, Category = "Minimal risk", Reason = "General help." };
+        var inner = new DualRoleChatClient(minimal, "one ", "two") { MessageId = "msg-1" };
+        var client = inner.AsBuilder().UseEUAIActClassification(new ClassificationOptions { MinimumRisk = Risk.High }).Build();
+
+        var updates = await client.GetStreamingResponseAsync(Input).ToListAsync();
+
+        Assert.AreEqual(1, inner.ClassificationCalls, "The tier is only known after classifying.");
+        Assert.AreEqual(2, updates.Count, "No trailing verdict update is emitted.");
+        Assert.IsNull(updates.ToChatResponse().EUAIActClassification);
+    }
+
+    [TestMethod]
+    public async Task NonStreaming_VerdictBelowMinimumRisk_IsNotAttached()
+    {
+        var failed = new InvalidOperationException("boom");
+        var inner = new DualRoleChatClient(failed, "Here is the answer.");
+        var client = inner.AsBuilder().UseEUAIActClassification(new ClassificationOptions { MinimumRisk = Risk.Minimal }).Build();
+
+        var response = await client.GetResponseAsync(Input);
+
+        Assert.IsNull(response.EUAIActClassification, "Unknown, a failed classification, is below every tier.");
+        Assert.IsNull(response.Messages.Single().AdditionalProperties);
+    }
+
+    [TestMethod]
+    public async Task NonStreaming_VerdictAtMinimumRisk_IsAttached()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "Here is the answer.");
+        var client = inner.AsBuilder().UseEUAIActClassification(new ClassificationOptions { MinimumRisk = Risk.High }).Build();
+
+        var response = await client.GetResponseAsync(Input);
+
+        Assert.AreEqual(Risk.High, response.Messages.Single().AdditionalProperties?.EUAIActClassification?.Risk);
+    }
+
+    /// <summary>
+    /// A message stored as JSON and read back holds the verdict as a <see cref="System.Text.Json.JsonElement"/>; the
+    /// getter reads it, whether the store named the properties in PascalCase or camelCase.
+    /// </summary>
+    [TestMethod]
+    [DataRow(null)]
+    [DataRow("camelCase")]
+    public void Getter_ReadsAVerdictStoredAsJson(string? naming)
+    {
+        var message = new ChatMessage(ChatRole.Assistant, "Here is the ranking.")
+        {
+            AdditionalProperties = new() { [ClassificationMiddleware.ClassificationKey] = HighVerdict },
+        };
+        var json = naming is null
+            ? System.Text.Json.JsonSerializerOptions.Default
+            : new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase };
+
+        var stored = System.Text.Json.JsonSerializer.Deserialize<ChatMessage>(System.Text.Json.JsonSerializer.Serialize(message, json), json)!;
+
+        Assert.IsInstanceOfType<System.Text.Json.JsonElement>(stored.AdditionalProperties![ClassificationMiddleware.ClassificationKey]);
+        var verdict = stored.AdditionalProperties.EUAIActClassification;
+        Assert.AreEqual(Risk.High, verdict?.Risk);
+        Assert.AreEqual("Annex III(4) employment", verdict?.Category);
+        Assert.AreEqual("CV screening.", verdict?.Reason);
+    }
 }

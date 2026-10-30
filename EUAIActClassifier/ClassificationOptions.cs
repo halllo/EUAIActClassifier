@@ -4,8 +4,8 @@ namespace EUAIActClassifier;
 
 /// <summary>
 /// Optional configuration for EU AI Act classification: override the system prompt used by the classifier,
-/// restrict which messages of a conversation are sent for classification, and/or change the sampling
-/// temperature of the classification call.
+/// restrict which messages of a conversation are sent for classification, change the sampling
+/// temperature of the classification call, and/or attach only the verdicts that reach a minimum risk tier.
 /// </summary>
 public sealed class ClassificationOptions
 {
@@ -52,4 +52,18 @@ public sealed class ClassificationOptions
     /// The filter runs first; empty-text messages are still dropped afterwards.
     /// </remarks>
     public Func<IReadOnlyList<ChatMessage>, IEnumerable<ChatMessage>>? ConversationFilter { get; set; }
+
+    /// <summary>
+    /// The lowest risk tier whose verdict the middleware and the agent wrapper attach. A verdict below it is
+    /// classified as usual but not attached, so the response carries none. When <see langword="null"/>, every
+    /// verdict is attached, <see cref="Risk.Unknown"/> included.
+    /// </summary>
+    /// <remarks>
+    /// For hosts that only act on the tiers that matter to them — for example
+    /// <c>MinimumRisk = Risk.High</c> to flag High and Unacceptable use cases and nothing else. A verdict that is
+    /// not attached cannot end up in a stored conversation. <see cref="Risk.Unknown"/>, a failed classification,
+    /// is below every tier, so any threshold leaves it out. The classification call still runs for every completed
+    /// turn: its tier is not known before it. <c>ClassifyEUAIActRiskAsync</c> attaches nothing and ignores this.
+    /// </remarks>
+    public Risk? MinimumRisk { get; set; }
 }
