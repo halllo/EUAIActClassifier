@@ -12,9 +12,9 @@ namespace EUAIActClassifier;
 /// Classification is a best-effort side channel: it never throws into the primary chat response. If the
 /// classification call fails it is recorded as <see cref="Risk.Unknown"/> instead.
 /// <para>
-/// Only a complete turn is classified. A conversation left waiting on a tool approval is not one — see
-/// <see cref="IsAwaitingToolApproval"/> — and is recorded as <see cref="Risk.Unknown"/> without a classification
-/// call, leaving the verdict to the turn that resumes and finishes.
+/// Only a complete turn is classified. A conversation left waiting on a tool approval or on a tool result is not
+/// one — see <see cref="IsAwaitingToolApproval"/> and <see cref="IsAwaitingToolResult"/> — and is recorded as
+/// <see cref="Risk.Unknown"/> without a classification call, leaving the verdict to the turn that resumes and finishes.
 /// </para>
 /// </remarks>
 public static class ClassificationMiddleware
@@ -116,7 +116,7 @@ public static class ClassificationMiddleware
         /// <returns>
         /// The inferred <see cref="Classification"/>. This is a best-effort side channel: it never throws, returning
         /// a <see cref="Risk.Unknown"/> verdict on failure, when there is nothing to classify, or when the
-        /// conversation is still waiting on a tool approval — the last two without calling the model at all.
+        /// conversation is still waiting on a tool approval or a tool result — the last two without calling the model at all.
         /// </returns>
         /// <remarks>
         /// Call this <b>once</b> at a layer that runs once per logical turn. In an agent framework whose run loop
@@ -268,7 +268,7 @@ public static class ClassificationMiddleware
     /// <param name="cancellationToken">A token to cancel the classification call.</param>
     /// <returns>
     /// The <see cref="Classification"/> inferred for the conversation. Returns a <see cref="Risk.Unknown"/>
-    /// classification when the conversation awaits a tool approval, when there is no text to classify, or when the
+    /// classification when the conversation awaits a tool approval or a tool result, when there is no text to classify, or when the
     /// model does not return a usable result.
     /// </returns>
     private static async Task<Classification> ClassifyCoreAsync(
@@ -281,10 +281,15 @@ public static class ClassificationMiddleware
 
         var materialized = conversation as IReadOnlyList<ChatMessage> ?? conversation.ToList();
 
-        // Checked before the filter so a ConversationFilter cannot hide the pending approval by trimming it away.
+        // Checked before the filter so a ConversationFilter cannot hide the pending approval or call by trimming it away.
         if (IsAwaitingToolApproval(materialized))
         {
             return Unknown("The turn is awaiting a tool approval, so it is not complete.");
+        }
+
+        if (IsAwaitingToolResult(materialized))
+        {
+            return Unknown("The turn is awaiting a tool result, so it is not complete.");
         }
 
         var filtered = options?.ConversationFilter is { } filter ? filter(materialized) : materialized;
@@ -364,6 +369,41 @@ public static class ClassificationMiddleware
             foreach (var request in message.Contents.OfType<ToolApprovalRequestContent>())
             {
                 if (answered is null || !answered.Contains(request.RequestId))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether the conversation stops at a tool call nobody has answered — a <see cref="FunctionCallContent"/>
+    /// whose <c>CallId</c> no <see cref="FunctionResultContent"/> in the conversation matches.
+    /// </summary>
+    /// <remarks>
+    /// The same half a turn as an open approval, reached another way: the run hands a tool call to its caller to
+    /// execute — a client-side tool the host runs itself — and ends there. The answer comes on the next run, once
+    /// the caller sends the result back, and that run is the one to classify. Tool calls the run executed itself
+    /// carry their result in the same conversation, so they do not count as pending.
+    /// </remarks>
+    private static bool IsAwaitingToolResult(IReadOnlyList<ChatMessage> conversation)
+    {
+        HashSet<string>? answered = null;
+        foreach (var message in conversation)
+        {
+            foreach (var result in message.Contents.OfType<FunctionResultContent>())
+            {
+                (answered ??= new HashSet<string>(StringComparer.Ordinal)).Add(result.CallId);
+            }
+        }
+
+        foreach (var message in conversation)
+        {
+            foreach (var call in message.Contents.OfType<FunctionCallContent>())
+            {
+                if (answered is null || !answered.Contains(call.CallId))
                 {
                     return true;
                 }

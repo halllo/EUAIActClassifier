@@ -26,6 +26,11 @@ namespace EUAIActClassifier;
 /// resumes with the user's decision and produces the answer. A host that surfaces verdicts above a threshold
 /// therefore sees nothing for the approval round-trip, since <see cref="Risk.Unknown"/> is the lowest tier.
 /// </para>
+/// <para>
+/// The same holds for a run that ends by handing a tool call to its caller — a client-side tool the host executes
+/// itself. The call has no result yet, so the run is not classified; the run that carries the result back and
+/// produces the answer is.
+/// </para>
 /// </remarks>
 public sealed class EUAIActClassificationAgent : DelegatingAIAgent
 {

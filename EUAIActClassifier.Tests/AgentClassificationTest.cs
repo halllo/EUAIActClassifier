@@ -145,6 +145,64 @@ public sealed class AgentClassificationTest
         Assert.AreEqual(Risk.High, response.EUAIActClassification?.Risk);
     }
 
+    /// <summary>
+    /// A run that ends by handing a tool call to its caller — a client-side tool the host executes — has not
+    /// completed its turn either: the call has no result and there is no answer yet, so no classification is spent.
+    /// </summary>
+    [TestMethod]
+    public async Task RunStreamingAsync_RunEndsOnUnansweredToolCall_DoesNotClassify()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var agent = StubAgent.Producing(new TextContent("Changing the colour first."), new FunctionCallContent("call-1", "change_background_color"))
+            .UseEUAIActClassification(classifier);
+
+        var updates = new List<AgentResponseUpdate>();
+        await foreach (var update in agent.RunStreamingAsync(Input))
+        {
+            updates.Add(update);
+        }
+
+        Assert.AreEqual(0, classifier.Calls, "A run waiting on a tool result must not spend a classification call.");
+        Assert.AreEqual(Risk.Unknown, updates[^1].EUAIActClassification?.Risk);
+        StringAssert.Contains(updates[^1].EUAIActClassification?.Reason, "tool result", "The reason should name why it was skipped.");
+    }
+
+    /// <summary>
+    /// The run that carries the result back and answers completes the turn, so it is classified. Its input holds
+    /// only the result: the call it answers lives in the history, not in this run's messages.
+    /// </summary>
+    [TestMethod]
+    public async Task RunAsync_ToolResultSentBack_ClassifiesTheCompletedTurn()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var agent = new StubAgent("The colour is changed; here is the shortlist.").UseEUAIActClassification(classifier);
+
+        var response = await agent.RunAsync(
+        [
+            new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "done")]),
+        ]);
+
+        Assert.AreEqual(1, classifier.Calls);
+        Assert.AreEqual(Risk.High, response.EUAIActClassification?.Risk);
+    }
+
+    /// <summary>A tool the run executed itself carries its result in the same run, so the turn is complete.</summary>
+    [TestMethod]
+    public async Task RunAsync_ToolCallAnsweredWithinTheRun_Classifies()
+    {
+        var classifier = new RecordingClassifier(HighVerdict);
+        var agent = StubAgent.Producing(
+                new FunctionCallContent("call-1", "search_cvs"),
+                new FunctionResultContent("call-1", "3 CVs"),
+                new TextContent("I have ranked the applicants."))
+            .UseEUAIActClassification(classifier);
+
+        var response = await agent.RunAsync(Input);
+
+        Assert.AreEqual(1, classifier.Calls);
+        Assert.AreEqual(Risk.High, response.EUAIActClassification?.Risk);
+    }
+
     [TestMethod]
     public async Task RunStreamingAsync_ClassifierThrows_RecordsUnknown_DoesNotThrow()
     {

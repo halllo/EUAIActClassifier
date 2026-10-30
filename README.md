@@ -36,6 +36,8 @@ Classification is a **best-effort side channel**: it never throws into your prim
 
 Only a **complete turn** is classified. A conversation left waiting on a tool approval — a `ToolApprovalRequestContent` that no `ToolApprovalResponseContent` answers — is half a turn: the tool has not run and there is no answer to judge. It is recorded as `Risk.Unknown` *without* a classification call, and the verdict is produced on the turn that resumes with the user's decision and finishes. So a human-in-the-loop round-trip costs no extra classification, and a threshold check like `>= Risk.High` sees nothing while the approval is pending.
 
+The same goes for a tool call left without a result — a `FunctionCallContent` that no `FunctionResultContent` answers, as when a run hands a client-side tool to its caller to execute. The turn is judged once the result is back and the answer exists.
+
 The [Microsoft Agent Framework](#microsoft-agent-framework-first-class) variant works the same way but runs at the **agent** level — it classifies once over the *completed* conversation of an agent run (after any tool-calling round-trips), rather than per model call. See that section for why.
 
 ## Risk tiers
@@ -143,7 +145,7 @@ await foreach (var update in agent.RunStreamingAsync("Screen these CVs and short
 }
 ```
 
-A run that ends by **asking for a tool approval** is not a completed turn, so it is not classified — see [the note above](#how-it-works). The verdict arrives on the run that resumes with the decision, which the classifier sees with the tool result and the answer in place.
+A run that ends by **asking for a tool approval**, or by **handing a tool call to its caller** (a client-side tool), is not a completed turn, so it is not classified — see [the note above](#how-it-works). The verdict arrives on the run that resumes with the decision, which the classifier sees with the tool result and the answer in place.
 
 `AgentResponse.EUAIActClassification` and `AgentResponseUpdate.EUAIActClassification` mirror the getters on the `IChatClient` side. This is built on the lightweight `Microsoft.Agents.AI.Abstractions` (the `DelegatingAIAgent` decorator base), so it works with **any** `AIAgent` and pulls in only the abstractions — not the full agent runtime.
 
@@ -198,6 +200,6 @@ The filter runs first; empty-text messages are still dropped afterwards.
 
 - **Classifies the use case, not the topic.** A request that merely *mentions* a sensitive subject stays `Minimal` if the AI is only acting as a general assistant; the tier reflects the AI system's purpose, as the Act intends.
 - **Requires a structured-output-capable model** for the classification call (it is constrained to a JSON schema and run at `temperature = 0` for stability, configurable via `ClassificationOptions`).
-- **Completed turns only.** A conversation awaiting a tool approval is skipped (`Risk.Unknown`, no classification call) and judged once it resumes and completes.
+- **Completed turns only.** A conversation awaiting a tool approval or a tool result is skipped (`Risk.Unknown`, no classification call) and judged once it resumes and completes.
 - General-purpose AI model obligations (Chapter V) are out of scope — the middleware judges the **use-case** risk tier of a conversation, not model-provider duties.
 - This is a classification aid, not legal advice or a certified compliance assessment.
