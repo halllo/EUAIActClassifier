@@ -34,7 +34,7 @@ The middleware passes your request straight through to the underlying model, the
 
 Classification is a **best-effort side channel**: it never throws into your primary response. If the classifier call fails (or there is nothing to classify), the result is recorded as `Risk.Unknown` rather than surfacing an error.
 
-Only a **complete turn** is classified. A conversation left waiting on a tool approval — a `ToolApprovalRequestContent` that no `ToolApprovalResponseContent` answers — is half a turn: the tool has not run and there is no answer to judge. It is recorded as `Risk.Unknown` *without* a classification call, and the verdict is produced on the turn that resumes with the user's decision and finishes. So a human-in-the-loop round-trip costs no extra classification, and a threshold check like `>= Risk.High` sees nothing while the approval is pending.
+Only a **complete turn** is classified. A conversation left waiting on a tool approval — a `ToolApprovalRequestContent` that no `ToolApprovalResponseContent` answers — is half a turn: the tool has not run and there is no answer to judge. It carries no verdict and costs no classification call, and the verdict is produced on the turn that resumes with the user's decision and finishes. So a human-in-the-loop round-trip costs no extra classification, and a threshold check like `>= Risk.High` sees nothing while the approval is pending.
 
 The same goes for a tool call left without a result — a `FunctionCallContent` that no `FunctionResultContent` answers, as when a run hands a client-side tool to its caller to execute. The turn is judged once the result is back and the answer exists.
 
@@ -115,9 +115,11 @@ await foreach (var update in client.GetStreamingResponseAsync(messages))
 
 ## Microsoft Agent Framework (first-class)
 
-For [Microsoft Agent Framework](https://www.nuget.org/packages/Microsoft.Agents.AI) agents, classify at the **agent** level — not in the agent's `IChatClient` pipeline.
+For [Microsoft Agent Framework](https://www.nuget.org/packages/Microsoft.Agents.AI) agents, classify either at the **agent** level or in the agent's `IChatClient` pipeline.
 
-> **Why not the `IChatClient` pipeline?** An agent's run loop (e.g. `ChatClientAgent` + `FunctionInvokingChatClient`) calls the underlying `IChatClient` **once per model round-trip**, looping `model → tool → model → …` until it is done. `IChatClient` middleware sits *inside* that loop, so it would classify **every intermediate step** (each one an extra LLM call) instead of the finished turn. Microsoft's docs are explicit: chat-client middleware *"executes for each model call, including calls that send tool results back to the model during a multi-turn tool calling sequence."*
+> **Both classify once per turn.** An agent's run loop (e.g. `ChatClientAgent` + `FunctionInvokingChatClient`) calls the underlying `IChatClient` **once per model round-trip**, looping `model → tool → model → …` until it is done, so chat-client middleware sees every step. Every step but the last ends on a tool call without a result, which is not a complete turn: it carries no verdict and costs no classification call. Only the model call that answers is classified.
+>
+> The difference is where the verdict ends up. In the `IChatClient` pipeline it lands on the answering message *inside* the agent's run, so the agent's chat history provider stores it with the turn. The agent-level wrapper below classifies after the run is over — after the history is stored — and lets you use a separate classifier client.
 
 `UseEUAIActClassification(classifier)` wraps any `AIAgent` so each run is classified **exactly once**, over the completed conversation:
 
@@ -200,6 +202,6 @@ The filter runs first; empty-text messages are still dropped afterwards.
 
 - **Classifies the use case, not the topic.** A request that merely *mentions* a sensitive subject stays `Minimal` if the AI is only acting as a general assistant; the tier reflects the AI system's purpose, as the Act intends.
 - **Requires a structured-output-capable model** for the classification call (it is constrained to a JSON schema and run at `temperature = 0` for stability, configurable via `ClassificationOptions`).
-- **Completed turns only.** A conversation awaiting a tool approval or a tool result is skipped (`Risk.Unknown`, no classification call) and judged once it resumes and completes.
+- **Completed turns only.** A conversation awaiting a tool approval or a tool result is skipped (no verdict, no classification call) and judged once it resumes and completes.
 - General-purpose AI model obligations (Chapter V) are out of scope — the middleware judges the **use-case** risk tier of a conversation, not model-provider duties.
 - This is a classification aid, not legal advice or a certified compliance assessment.

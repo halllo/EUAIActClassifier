@@ -87,8 +87,7 @@ public sealed class AgentClassificationTest
 
     /// <summary>
     /// A run that stops to ask for a tool approval has not completed its turn: the tool has not run and there is no
-    /// answer, so it is not classified — no classification call is spent, and the verdict stays
-    /// <see cref="Risk.Unknown"/> so a host that surfaces High-and-above sees nothing for the round-trip.
+    /// answer, so it is not classified — no classification call is spent, and the run carries no verdict at all.
     /// </summary>
     [TestMethod]
     public async Task RunAsync_RunStopsForToolApproval_DoesNotClassify()
@@ -100,11 +99,10 @@ public sealed class AgentClassificationTest
         var response = await agent.RunAsync(Input);
 
         Assert.AreEqual(0, classifier.Calls, "An interrupted run must not spend a classification call.");
-        Assert.AreEqual(Risk.Unknown, response.EUAIActClassification?.Risk);
-        StringAssert.Contains(response.EUAIActClassification?.Reason, "approval", "The reason should name why it was skipped.");
+        Assert.IsNull(response.EUAIActClassification, "An interrupted run carries no verdict.");
     }
 
-    /// <summary>The streaming path skips the same run, and still emits its trailing verdict update.</summary>
+    /// <summary>The streaming path skips the same run, and emits no trailing verdict update.</summary>
     [TestMethod]
     public async Task RunStreamingAsync_RunStopsForToolApproval_DoesNotClassify()
     {
@@ -119,7 +117,7 @@ public sealed class AgentClassificationTest
         }
 
         Assert.AreEqual(0, classifier.Calls, "An interrupted streaming run must not spend a classification call.");
-        Assert.AreEqual(Risk.Unknown, updates[^1].EUAIActClassification?.Risk);
+        Assert.IsTrue(updates.All(u => u.EUAIActClassification is null), "An interrupted streaming run carries no verdict.");
     }
 
     /// <summary>
@@ -163,8 +161,7 @@ public sealed class AgentClassificationTest
         }
 
         Assert.AreEqual(0, classifier.Calls, "A run waiting on a tool result must not spend a classification call.");
-        Assert.AreEqual(Risk.Unknown, updates[^1].EUAIActClassification?.Risk);
-        StringAssert.Contains(updates[^1].EUAIActClassification?.Reason, "tool result", "The reason should name why it was skipped.");
+        Assert.IsTrue(updates.All(u => u.EUAIActClassification is null), "A run waiting on a tool result carries no verdict.");
     }
 
     /// <summary>

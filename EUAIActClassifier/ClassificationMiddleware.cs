@@ -82,9 +82,14 @@ public static class ClassificationMiddleware
     extension(ChatClientBuilder builder)
     {
         /// <summary>
-        /// Adds the classification middleware to the pipeline so that every response is classified
-        /// against the EU AI Act risk tiers.
+        /// Adds the classification middleware to the pipeline so that every response that completes a turn is
+        /// classified against the EU AI Act risk tiers.
         /// </summary>
+        /// <remarks>
+        /// A response that ends the turn half way — on a tool call without a result, or on a tool approval nobody
+        /// has answered — carries no verdict at all and costs no classification call. In a tool-calling loop that is
+        /// every response but the last, so the loop is classified once, at the model call that answers.
+        /// </remarks>
         /// <param name="options">
         /// Optional configuration — a custom system prompt, a conversation filter and/or a sampling temperature.
         /// When <see langword="null"/>, the built-in prompt is used, the whole conversation is classified and the
@@ -119,10 +124,7 @@ public static class ClassificationMiddleware
         /// conversation is still waiting on a tool approval or a tool result — the last two without calling the model at all.
         /// </returns>
         /// <remarks>
-        /// Call this <b>once</b> at a layer that runs once per logical turn. In an agent framework whose run loop
-        /// invokes the underlying <see cref="IChatClient"/> multiple times per run (e.g. a tool-calling loop),
-        /// placing the classifier in the chat-client pipeline would re-classify every intermediate model call;
-        /// classifying once at the agent-run layer over the final conversation avoids that. The
+        /// Call this <b>once</b> per logical turn, over the conversation that completes it. The
         /// <paramref name="classifierClient"/> can be any client (often a cheaper, separate model) and need not be
         /// the one that produced the conversation.
         /// </remarks>
@@ -187,7 +189,14 @@ public static class ClassificationMiddleware
         var messageList = messages as IReadOnlyList<ChatMessage> ?? messages.ToList();
 
         var response = await inner.GetResponseAsync(messageList, options, cancellationToken).ConfigureAwait(false);
-        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), classificationOptions, cancellationToken).ConfigureAwait(false);
+
+        var conversation = messageList.Concat(response.Messages).ToList();
+        if (IsIncompleteTurn(conversation))
+        {
+            return response;
+        }
+
+        var classification = await ClassifySafelyAsync(inner, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
 
         var lastMessage = response.Messages.LastOrDefault();
         if (lastMessage is not null)
@@ -223,7 +232,16 @@ public static class ClassificationMiddleware
         // trailing side-channel update. Tagging it with the last message id makes ToChatResponse route the
         // classification onto that message; if there is none it falls back to the response level.
         var response = updates.ToChatResponse();
-        var classification = await ClassifySafelyAsync(inner, messageList.Concat(response.Messages), classificationOptions, cancellationToken).ConfigureAwait(false);
+
+        // A response that leaves the turn half done emits nothing: a verdict there would stamp every step of a
+        // tool-calling loop, and the turn is classified at the response that completes it.
+        var conversation = messageList.Concat(response.Messages).ToList();
+        if (IsIncompleteTurn(conversation))
+        {
+            yield break;
+        }
+
+        var classification = await ClassifySafelyAsync(inner, conversation, classificationOptions, cancellationToken).ConfigureAwait(false);
 
         yield return new ChatResponseUpdate
         {
@@ -339,6 +357,13 @@ public static class ClassificationMiddleware
             ? classification
             : additionalProperties.Values.OfType<Classification>().FirstOrDefault();
     }
+
+    /// <summary>
+    /// Whether the conversation stops half way through its turn — at a tool approval nobody has answered or at a tool
+    /// call without a result. Such a turn is not classified, and the middleware and agent attach no verdict to it.
+    /// </summary>
+    internal static bool IsIncompleteTurn(IReadOnlyList<ChatMessage> conversation) =>
+        IsAwaitingToolApproval(conversation) || IsAwaitingToolResult(conversation);
 
     /// <summary>
     /// Whether the conversation stops at a tool approval nobody has answered — a

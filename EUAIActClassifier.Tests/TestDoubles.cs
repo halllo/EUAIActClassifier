@@ -112,6 +112,15 @@ internal sealed class DualRoleChatClient : IChatClient
         _primaryChunks = primaryChunks;
     }
 
+    /// <summary>
+    /// Contents the primary turn ends on instead of text — a tool call the run hands on, or one awaiting approval —
+    /// streamed as one update after the text chunks.
+    /// </summary>
+    public IReadOnlyList<AIContent> PrimaryContents { get; init; } = [];
+
+    /// <summary>The message id the primary turn's updates carry, as a provider that names its messages sets it.</summary>
+    public string? MessageId { get; init; }
+
     public int ClassificationCalls { get; private set; }
 
     /// <summary>The messages received on the most recent classification call (system prompt + transcript).</summary>
@@ -133,7 +142,9 @@ internal sealed class DualRoleChatClient : IChatClient
             return Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, JsonSerializer.Serialize(_verdict))));
         }
 
-        return Task.FromResult(new ChatResponse(_primaryChunks.Select(c => new ChatMessage(ChatRole.Assistant, c)).ToList()));
+        List<ChatMessage> primary = [.. _primaryChunks.Select(c => new ChatMessage(ChatRole.Assistant, c) { MessageId = MessageId })];
+        if (PrimaryContents.Count > 0) primary.Add(new ChatMessage(ChatRole.Assistant, [.. PrimaryContents]) { MessageId = MessageId });
+        return Task.FromResult(new ChatResponse(primary));
     }
 
     public async IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null, [EnumeratorCancellation] CancellationToken cancellationToken = default)
@@ -141,7 +152,11 @@ internal sealed class DualRoleChatClient : IChatClient
         // Only the primary turn streams; the classification call always uses the non-streaming overload.
         foreach (var c in _primaryChunks)
         {
-            yield return new ChatResponseUpdate(ChatRole.Assistant, c);
+            yield return new ChatResponseUpdate(ChatRole.Assistant, c) { MessageId = MessageId };
+        }
+        if (PrimaryContents.Count > 0)
+        {
+            yield return new ChatResponseUpdate(ChatRole.Assistant, [.. PrimaryContents]) { MessageId = MessageId };
         }
         await Task.CompletedTask;
     }

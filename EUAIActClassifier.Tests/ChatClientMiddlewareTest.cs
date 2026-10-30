@@ -46,6 +46,73 @@ public sealed class ChatClientMiddlewareTest
         Assert.AreEqual(1, inner.ClassificationCalls, "A streaming response must be classified once.");
     }
 
+    /// <summary>
+    /// A tagged stream gets a tagged verdict: the trailing update carries the answering message's id, so
+    /// <c>ToChatResponse</c> puts the verdict on that message — where a chat history store keeps it — rather than
+    /// on the response.
+    /// </summary>
+    [TestMethod]
+    public async Task Streaming_PutsTheVerdictOnTheAnsweringMessage()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "one ", "two") { MessageId = "msg-1" };
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var response = (await client.GetStreamingResponseAsync(Input).ToListAsync()).ToChatResponse();
+
+        var message = response.Messages.Single();
+        Assert.AreEqual("one two", message.Text);
+        Assert.AreEqual(Risk.High, message.AdditionalProperties?.EUAIActClassification?.Risk);
+    }
+
+    /// <summary>
+    /// In a tool-calling loop every model call but the last ends on a tool call without a result. Such a step is not
+    /// a complete turn: it costs no classification call and carries no verdict, so the loop's messages are not
+    /// stamped one by one.
+    /// </summary>
+    [TestMethod]
+    public async Task Streaming_StepEndingOnAToolCall_CarriesNoVerdict()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "Let me look that up.") { PrimaryContents = [new FunctionCallContent("call-1", "search_cvs")] };
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var updates = await client.GetStreamingResponseAsync(Input).ToListAsync();
+
+        Assert.AreEqual(0, inner.ClassificationCalls);
+        Assert.IsTrue(updates.All(u => u.EUAIActClassification is null));
+        Assert.IsNull(updates.ToChatResponse().EUAIActClassification);
+    }
+
+    /// <summary>The non-streaming path skips the same step and leaves its response untouched.</summary>
+    [TestMethod]
+    public async Task NonStreaming_StepEndingOnAToolApproval_CarriesNoVerdict()
+    {
+        var inner = new DualRoleChatClient(HighVerdict) { PrimaryContents = [new ToolApprovalRequestContent("approval-1", new FunctionCallContent("call-1", "screen_cvs"))] };
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var response = await client.GetResponseAsync(Input);
+
+        Assert.AreEqual(0, inner.ClassificationCalls);
+        Assert.IsNull(response.EUAIActClassification);
+    }
+
+    /// <summary>The model call after the tool ran sees the call answered, and that completes the turn.</summary>
+    [TestMethod]
+    public async Task Streaming_AnswerAfterTheToolRan_IsClassified()
+    {
+        var inner = new DualRoleChatClient(HighVerdict, "Here is the ranking.");
+        var client = inner.AsBuilder().UseEUAIActClassification().Build();
+
+        var updates = await client.GetStreamingResponseAsync(
+        [
+            new ChatMessage(ChatRole.User, "Screen these CVs."),
+            new ChatMessage(ChatRole.Assistant, [new FunctionCallContent("call-1", "search_cvs")]),
+            new ChatMessage(ChatRole.Tool, [new FunctionResultContent("call-1", "3 CVs")]),
+        ]).ToListAsync();
+
+        Assert.AreEqual(1, inner.ClassificationCalls);
+        Assert.AreEqual(Risk.High, updates[^1].EUAIActClassification?.Risk);
+    }
+
     [TestMethod]
     public async Task ClassifierThrows_RecordsUnknown_DoesNotThrow()
     {

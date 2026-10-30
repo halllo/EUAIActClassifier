@@ -21,10 +21,9 @@ namespace EUAIActClassifier;
 /// installing both classifies every turn twice (once per model call, then once per run).
 /// </para>
 /// <para>
-/// A run that ends by asking for a tool approval has not completed its turn, so it is not classified: the verdict
-/// is recorded as <see cref="Risk.Unknown"/> without a classification call, and the turn is judged on the run that
-/// resumes with the user's decision and produces the answer. A host that surfaces verdicts above a threshold
-/// therefore sees nothing for the approval round-trip, since <see cref="Risk.Unknown"/> is the lowest tier.
+/// A run that ends by asking for a tool approval has not completed its turn, so it is not classified: it carries
+/// no verdict at all and costs no classification call, and the turn is judged on the run that resumes with the
+/// user's decision and produces the answer.
 /// </para>
 /// <para>
 /// The same holds for a run that ends by handing a tool call to its caller — a client-side tool the host executes
@@ -63,8 +62,14 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
 
         var response = await InnerAgent.RunAsync(messageList, session, options, cancellationToken).ConfigureAwait(false);
 
+        var conversation = messageList.Concat(response.Messages).ToList();
+        if (ClassificationMiddleware.IsIncompleteTurn(conversation))
+        {
+            return response;
+        }
+
         var classification = await _classifier
-            .ClassifyEUAIActRiskAsync(messageList.Concat(response.Messages), _options, cancellationToken)
+            .ClassifyEUAIActRiskAsync(conversation, _options, cancellationToken)
             .ConfigureAwait(false);
 
         (response.AdditionalProperties ??= [])[ClassificationMiddleware.ClassificationKey] = classification;
@@ -90,9 +95,15 @@ public sealed class EUAIActClassificationAgent : DelegatingAIAgent
         }
 
         // Once the run has completed, classify the full conversation exactly once and emit the verdict as a
-        // trailing side-channel update.
+        // trailing side-channel update — unless the run left its turn half done, which carries no verdict.
+        var conversation = messageList.Concat(updates.ToAgentResponse().Messages).ToList();
+        if (ClassificationMiddleware.IsIncompleteTurn(conversation))
+        {
+            yield break;
+        }
+
         var classification = await _classifier
-            .ClassifyEUAIActRiskAsync(messageList.Concat(updates.ToAgentResponse().Messages), _options, cancellationToken)
+            .ClassifyEUAIActRiskAsync(conversation, _options, cancellationToken)
             .ConfigureAwait(false);
 
         yield return new AgentResponseUpdate
